@@ -6,7 +6,13 @@ from fastapi import APIRouter, Depends, Request, status
 
 from app.api.deps import CurrentAdmin, CurrentPrincipal, Uow, get_auth_service
 from app.core.tenancy import ROLE_SCOPES
-from app.schemas.auth import LoginRequest, RefreshRequest, TokenResponse, UserCreate
+from app.schemas.auth import (
+    LoginRequest,
+    PasswordChangeRequest,
+    RefreshRequest,
+    TokenResponse,
+    UserCreate,
+)
 from app.schemas.common import LocationOut, MeOut, OrganizationOut, UserOut
 from app.services.auth.service import AuthService
 
@@ -80,6 +86,33 @@ async def me(principal: CurrentPrincipal, uow: Uow) -> MeOut:
             location=LocationOut.model_validate(location) if location else None,
             scopes=sorted(ROLE_SCOPES.get(principal.role, frozenset())),
         )
+
+
+@router.post("/password", response_model=TokenResponse)
+async def change_password(
+    payload: PasswordChangeRequest,
+    principal: CurrentPrincipal,
+    uow: Uow,
+    auth: AuthService = Depends(get_auth_service),
+) -> TokenResponse:
+    """Change your own password.
+
+    Every other session for this account is revoked. A fresh token pair comes
+    back so the caller is not signed out by their own action -- replace the
+    stored tokens with these.
+    """
+    tokens = await auth.change_password(
+        uow,
+        principal,
+        current_password=payload.current_password,
+        new_password=payload.new_password,
+    )
+    return TokenResponse(
+        access_token=tokens.access_token,
+        refresh_token=tokens.refresh_token,
+        expires_in=tokens.expires_in,
+        role=principal.role,
+    )
 
 
 @router.post("/users", response_model=UserOut, status_code=status.HTTP_201_CREATED)

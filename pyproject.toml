@@ -99,6 +99,9 @@ ignore = [
 # `token_type: str = "bearer"` is the OAuth2 token_type field, not a secret.
 "app/schemas/auth.py" = ["S105"]
 "app/schemas/platform.py" = ["S105"]
+# AuditAction members are the *names of recorded events* -- USER_PASSWORD_RESET
+# is what happened, not a credential.
+"app/core/enums.py" = ["S105"]
 
 [tool.mypy]
 python_version = "3.12"

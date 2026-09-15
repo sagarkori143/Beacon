@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Generic, TypeVar
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 T = TypeVar("T")
 
@@ -16,11 +16,20 @@ class ORMModel(BaseModel):
 
 
 class Page(BaseModel, Generic[T]):
+    """One page of a list, with enough context to render a pager.
+
+    ``total`` is what lets a table say "42 results" rather than leaving the
+    client to infer "maybe more" from a full page.
+    """
+
     items: list[T]
     total: int | None = None
     limit: int = 50
     offset: int = 0
 
+    # A plain @property is invisible to Pydantic v2, so this would never reach
+    # the client -- the caller would have to recompute it from the other three.
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def has_more(self) -> bool:
         return self.total is not None and self.offset + len(self.items) < self.total

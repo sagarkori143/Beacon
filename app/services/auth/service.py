@@ -18,7 +18,7 @@ from uuid import UUID
 from app.core.config import Settings
 from app.core.db import UnitOfWork, tenant_session, unscoped_session
 from app.core.enums import AuditAction, Role
-from app.core.errors import AuthenticationError
+from app.core.errors import AuthenticationError, ConflictError
 from app.core.logging import get_logger
 from app.core.security import (
     TokenPair,
@@ -197,11 +197,19 @@ class AuthService:
         location_id: UUID | None = None,
         full_name: str | None = None,
     ) -> Principal:
+        # The login directory is global, so an address is unique across the
+        # whole deployment. Catching a duplicate here turns what would surface
+        # as an unhandled primary-key violation -- a 500 -- into a plain 409.
+        normalized = normalize_email(email)
+        async with unscoped_session(self.settings) as session:
+            if await user_repo.resolve_directory(session, normalized) is not None:
+                raise ConflictError(f"A user with email '{normalized}' already exists")
+
         async with uow.begin() as session:
             user = await user_repo.create_user(
                 session,
                 tenant,
-                email=email,
+                email=normalized,
                 password_hash=hash_password(password),
                 role=role,
                 location_id=location_id,
@@ -215,6 +223,59 @@ class AuthService:
                 email=user.email,
                 scopes=_scopes(user.role),
             )
+
+    async def change_password(
+        self,
+        uow: UnitOfWork,
+        principal: Principal,
+        *,
+        current_password: str,
+        new_password: str,
+    ) -> TokenPair:
+        """Change your own password, proving you know the current one.
+
+        Returns a fresh token pair. Changing a password revokes every
+        outstanding token for the account -- including the one that made this
+        request -- so without handing back new tokens the caller would be signed
+        out by their own successful action.
+        """
+        async with uow.begin() as session:
+            user = await user_repo.get_user(session, principal.tenant, principal.user_id)
+
+            if not verify_password(current_password, user.password_hash):
+                await audit_repo.record(
+                    session,
+                    organization_id=principal.organization_id,
+                    action=AuditAction.USER_PASSWORD_CHANGE,
+                    outcome="FAILURE",
+                    actor_user_id=user.id,
+                    resource_type="user",
+                    resource_id=user.id,
+                )
+                log.info("password_change_failed", user_id=str(user.id))
+                raise AuthenticationError("Current password is incorrect")
+
+            await user_repo.set_password(session, user, hash_password(new_password))
+            await audit_repo.record(
+                session,
+                organization_id=principal.organization_id,
+                action=AuditAction.USER_PASSWORD_CHANGE,
+                actor_user_id=user.id,
+                resource_type="user",
+                resource_id=user.id,
+            )
+            tokens = create_token_pair(
+                settings=self.settings.security,
+                user_id=user.id,
+                organization_id=user.organization_id,
+                role=user.role,
+                location_id=user.location_id,
+                token_version=user.token_version,
+                email=user.email,
+            )
+
+        log.info("password_changed", user_id=str(principal.user_id))
+        return tokens
 
 
 def _scopes(role: Role) -> frozenset[str]:

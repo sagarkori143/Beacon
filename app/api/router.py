@@ -13,6 +13,7 @@ from app.api.v1 import (
     organizations,
     platform,
     search,
+    users,
 )
 
 
@@ -23,6 +24,7 @@ def build_api_router(prefix: str) -> APIRouter:
     # Platform endpoints accept only a platform credential; see api/v1/platform.py.
     router.include_router(platform.router)
     router.include_router(organizations.router)
+    router.include_router(users.router)
     router.include_router(documents.router)
     router.include_router(ingestion.router)
     router.include_router(search.router)

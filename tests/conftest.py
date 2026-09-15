@@ -234,6 +234,27 @@ async def uow(settings: Settings, db_engine: object, tenant: TenantContext):
 
 
 @pytest.fixture
+async def app_engine(settings: Settings, db_engine: object) -> AsyncIterator[None]:
+    """Stand up the process-wide engine and sessionmaker.
+
+    Most services take a UnitOfWork, so a test can hand them an engine directly.
+    A few deliberately do not -- `AuthService` resolves the login directory
+    without tenant scope, and `PlatformService` acts outside any single tenant --
+    and those reach for the module-level sessionmaker. Tests that exercise them
+    have to stand it up, pointed at the unprivileged `app_rw` role so RLS still
+    applies.
+    """
+    from app.core.db import dispose_engine, init_engine
+
+    await dispose_engine()
+    init_engine(settings)
+    try:
+        yield None
+    finally:
+        await dispose_engine()
+
+
+@pytest.fixture
 async def owner_engine() -> AsyncIterator[object]:
     """Engine as the owner role, for provisioning tenants in fixtures.
 

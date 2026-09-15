@@ -30,25 +30,6 @@ OPERATOR_PASSWORD = "operator-password-123"
 
 
 @pytest.fixture
-async def app_engine(settings: Settings, db_engine: object) -> AsyncIterator[None]:
-    """Initialise the process-wide engine.
-
-    ``PlatformService`` opens its own sessions rather than taking a UnitOfWork,
-    because its whole job is to act *outside* one tenant's scope. That means it
-    uses the module-level sessionmaker, so these tests have to stand it up --
-    pointed at the unprivileged ``app_rw`` role, so RLS genuinely applies.
-    """
-    from app.core.db import dispose_engine, init_engine
-
-    await dispose_engine()
-    init_engine(settings)
-    try:
-        yield None
-    finally:
-        await dispose_engine()
-
-
-@pytest.fixture
 def platform_service(settings: Settings, app_engine: None) -> PlatformService:
     return PlatformService(settings)
 

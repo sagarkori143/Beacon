@@ -19,7 +19,7 @@ from uuid import UUID
 from sqlalchemy import select, text
 
 from app.core.config import Settings
-from app.core.db import ORG_GUC, platform_session, unscoped_session
+from app.core.db import ORG_GUC, UnitOfWork, platform_session, unscoped_session
 from app.core.enums import AuditAction, Role
 from app.core.errors import AuthenticationError, ConflictError, NotFoundError
 from app.core.logging import get_logger
@@ -40,6 +40,7 @@ from app.repositories import audit as audit_repo
 from app.repositories import organization as org_repo
 from app.repositories import user as user_repo
 from app.services.documents.service import slugify
+from app.services.users import management
 
 log = get_logger(__name__)
 
@@ -345,26 +346,25 @@ class PlatformService:
     async def set_user_active(
         self, operator: PlatformPrincipal, *, organization_id: UUID, user_id: UUID, active: bool
     ) -> User:
-        """Enable or disable a tenant user, revoking their tokens when disabling."""
-        tenant = TenantContext(organization_id=organization_id)
+        """Enable or disable a tenant user, revoking their tokens when disabling.
 
-        async with platform_session(organization_id, self.settings) as session:
-            user = await user_repo.get_user(session, tenant, user_id)
-            user.is_active = active
-            if not active:
-                # Disabling must take effect now, not at token expiry.
-                await user_repo.invalidate_tokens(session, user)
-            await session.flush()
+        Delegates to the same code an organization admin goes through, so the
+        two paths cannot drift -- with one deliberate difference: the operator is
+        the recovery path, so the last-admin rule does not apply to them. See
+        :func:`app.services.users.management.set_user_active`.
 
-            await audit_repo.record(
-                session,
-                organization_id=organization_id,
-                action=AuditAction.USER_ENABLE if active else AuditAction.USER_DISABLE,
-                resource_type="user",
-                resource_id=user.id,
-                message=f"by platform operator {operator.email}",
-            )
-            return user
+        A plain ``UnitOfWork`` is enough here rather than ``platform_session``:
+        `users`, `audit_log` and `user_directory` need only the tenant scope,
+        and the platform flag exists solely to widen `organizations`.
+        """
+        return await management.set_user_active(
+            UnitOfWork(TenantContext(organization_id=organization_id), self.settings),
+            TenantContext(organization_id=organization_id),
+            user_id=user_id,
+            active=active,
+            actor=management.Actor(label=f"platform operator {operator.email}"),
+            protect_last_admin=False,
+        )
 
     # -- helpers -------------------------------------------------------------
 

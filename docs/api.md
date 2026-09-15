@@ -83,7 +83,138 @@ facts that belong in a field rather than a document.
 ### `POST /auth/users` *(admin)*
 
 Creates a user in the caller's organization. A `location_id`, if given, is
-validated against that organization.
+validated against that organization. A duplicate email is a `409`.
+
+See [Users](#users) below for listing, updating, disabling and password
+management.
+
+---
+
+## Users
+
+An organization administrator managing their own people. Every endpoint is
+scoped to the caller's organization by their token — **no path, query or body
+field here names an organization**, which is what makes "an admin can only ever
+touch their own people" true by construction rather than by review.
+
+A user id belonging to another organization returns `404`, not `403`: confirming
+that an id exists elsewhere would itself be a leak.
+
+### `GET /users` *(admin)*
+
+Query: `role`, `location_id`, `is_active`, `q` (matches email or name), `limit`
+(1–200, default 50), `offset`.
+
+```json
+{
+  "items": [
+    {
+      "id": "b54f1295-2006-4813-90bb-a0a3b2c9de30",
+      "email": "admin@sagarhotels.example",
+      "full_name": "Sagar Admin",
+      "role": "ADMIN",
+      "location_id": null,
+      "is_active": true
+    },
+    {
+      "id": "b006aeb8-66d1-4449-b3ef-20f9dce00c75",
+      "email": "ginza@sagarhotels.example",
+      "full_name": "Ginza Front Desk",
+      "role": "USER",
+      "location_id": "24bf8497-0d9a-4a55-8e29-9b6bce9b01bd",
+      "is_active": true
+    }
+  ],
+  "total": 4,
+  "limit": 2,
+  "offset": 0,
+  "has_more": true
+}
+```
+
+`total` is computed from the *same* filters as the page, so a table can say
+"4 results" rather than inferring "maybe more" from a full page.
+
+An administrator pinned to a location sees only that location's users, the same
+way `GET /locations` already narrows for them.
+
+`GET /users/{id}` returns one.
+
+### `PATCH /users/{id}` *(admin)*
+
+```json
+{"role": "ADMIN", "full_name": "Temp Admin"}
+```
+
+Fields: `full_name`, `role`, `location_id`. **Absent means "leave alone"; `null`
+means "clear"** — those are different requests, and "unpin this user from their
+branch" must not look identical to "don't touch their branch".
+
+**Changing `role` or `location_id` signs the user out.** Access tokens are not
+re-read from the database on every request, so without revoking them a demoted
+administrator would keep administrator power until their token expired — up to
+`SECURITY__ACCESS_TOKEN_TTL_S`, 30 minutes by default. Renaming someone does
+not sign them out.
+
+Not accepted here, deliberately: `email` (it would need a second write to the
+un-scoped login directory), `is_active` (that is what disable/enable is for),
+and `organization_id` (moving a user between tenants is not an edit).
+
+### `POST /users/{id}/disable` · `/enable` *(admin)*
+
+Disabling revokes the user's outstanding tokens and blocks sign-in.
+
+Two refusals, both `409`:
+
+| | |
+|---|---|
+| Your own account | `"You cannot disable your own account."` — refused even when other admins exist, because it is never what was meant |
+| The last active administrator | `"An organization must keep at least one active administrator."` |
+
+The second one matters more than it looks. An organization with no administrator
+cannot create users, upload knowledge, or undo the change — recovery needs a
+platform operator, which for a customer means a support ticket. The check takes
+a row lock rather than a plain count, so two concurrent requests each demoting
+the other cannot both succeed.
+
+The same rule applies to demotion via `PATCH`.
+
+**The platform-operator path is deliberately exempt.** An operator suspending a
+whole customer by disabling their last admin is a real thing to want, and the
+operator is themselves the way back in — so the rule that protects tenants from
+themselves would only get in their way.
+
+### `POST /users/{id}/reset-password` *(admin)*
+
+```json
+{}
+```
+
+```json
+{
+  "user": { "id": "5c2e7d29-…", "email": "temp@sagarhotels.example", "role": "ADMIN", "…": "…" },
+  "password": "9MawCPoc2OSEBEORIMBMkYzB"
+}
+```
+
+Omit `password` and one is generated and returned **once** — it is stored only
+as a hash and cannot be retrieved again. Supply your own and `password` comes
+back `null`, since echoing a password you already know only adds another place
+for it to leak. Either way the user's sessions end.
+
+### `POST /auth/password` *(any principal)*
+
+Change your **own** password, proving you know the current one.
+
+```json
+{"current_password": "…", "new_password": "…"}
+```
+
+Returns a fresh `TokenResponse`. A password change revokes every outstanding
+token for the account — including the one that made the request — so the new
+pair is what stops the caller being signed out by their own successful action.
+Replace the stored tokens with these. A wrong `current_password` is `401` and
+changes nothing.
 
 ---
 
