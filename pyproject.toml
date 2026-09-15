@@ -98,6 +98,7 @@ ignore = [
 "app/core/config.py" = ["S105"]
 # `token_type: str = "bearer"` is the OAuth2 token_type field, not a secret.
 "app/schemas/auth.py" = ["S105"]
+"app/schemas/platform.py" = ["S105"]
 
 [tool.mypy]
 python_version = "3.12"

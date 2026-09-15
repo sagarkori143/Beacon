@@ -21,7 +21,7 @@ from app.core.config import SecuritySettings
 from app.core.enums import Role
 from app.core.errors import AuthenticationError
 from app.core.logging import get_logger
-from app.core.tenancy import Principal, scopes_for
+from app.core.tenancy import PlatformPrincipal, Principal, scopes_for
 
 log = get_logger(__name__)
 
@@ -30,6 +30,12 @@ log = get_logger(__name__)
 _hasher = PasswordHasher()
 
 TokenType = Literal["access", "refresh"]
+
+#: Which kind of credential a token represents. Tenant endpoints accept only
+#: "tenant"; platform endpoints accept only "platform". Keeping them distinct
+#: means a platform token cannot reach tenant data even if a dependency is
+#: wired up carelessly.
+PrincipalType = Literal["tenant", "platform"]
 
 
 def hash_password(password: str) -> str:
@@ -50,6 +56,21 @@ def needs_rehash(password_hash: str) -> bool:
         return _hasher.check_needs_rehash(password_hash)
     except InvalidHashError:
         return True
+
+
+@dataclass(frozen=True, slots=True)
+class PlatformClaims:
+    """Decoded payload of a platform-operator token."""
+
+    subject: UUID
+    email: str
+    token_type: TokenType
+    token_version: int
+    jti: str
+    expires_at: datetime | None = None
+
+    def to_principal(self) -> PlatformPrincipal:
+        return PlatformPrincipal(user_id=self.subject, email=self.email)
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +129,7 @@ def create_token(
         # without needing a denylist.
         "tv": token_version,
         "typ": token_type,
+        "pt": "tenant",
         "jti": uuid.uuid4().hex,
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(seconds=ttl)).timestamp()),
@@ -178,6 +200,10 @@ def decode_token(
 
     if payload.get("typ") != expect:
         raise AuthenticationError(f"Expected a {expect} token")
+    if payload.get("pt", "tenant") != "tenant":
+        # A platform token on a tenant endpoint. Refuse rather than fall through
+        # to a principal with no organization.
+        raise AuthenticationError("This credential cannot be used for tenant access")
 
     try:
         role = Role(payload["role"])
@@ -191,6 +217,79 @@ def decode_token(
             token_version=int(payload.get("tv", 0)),
             jti=str(payload.get("jti", "")),
             email=payload.get("email"),
+            expires_at=datetime.fromtimestamp(payload["exp"], tz=UTC),
+        )
+    except (KeyError, ValueError) as exc:
+        raise AuthenticationError("Malformed authentication token") from exc
+
+
+# ---------------------------------------------------------------------------
+# Platform tokens
+# ---------------------------------------------------------------------------
+
+
+def create_platform_token_pair(
+    *,
+    settings: SecuritySettings,
+    user_id: UUID,
+    email: str,
+    token_version: int,
+) -> TokenPair:
+    """Issue tokens for a platform operator.
+
+    Carries no organization, because the holder belongs to none. Every platform
+    endpoint names the organization it is acting on explicitly.
+    """
+    now = datetime.now(UTC)
+
+    def _encode(token_type: TokenType, ttl: int) -> str:
+        payload: dict[str, Any] = {
+            "sub": str(user_id),
+            "email": email,
+            "pt": "platform",
+            "typ": token_type,
+            "tv": token_version,
+            "jti": uuid.uuid4().hex,
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(seconds=ttl)).timestamp()),
+        }
+        return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+    return TokenPair(
+        access_token=_encode("access", settings.access_token_ttl_s),
+        refresh_token=_encode("refresh", settings.refresh_token_ttl_s),
+        expires_in=settings.access_token_ttl_s,
+    )
+
+
+def decode_platform_token(
+    token: str, settings: SecuritySettings, *, expect: TokenType = "access"
+) -> PlatformClaims:
+    """Verify a platform token. Refuses a tenant token outright."""
+    try:
+        payload = jwt.decode(
+            token,
+            settings.jwt_secret,
+            algorithms=[settings.jwt_algorithm],
+            options={"require": ["exp", "sub", "typ"]},
+        )
+    except jwt.ExpiredSignatureError as exc:
+        raise AuthenticationError("Token has expired") from exc
+    except jwt.InvalidTokenError as exc:
+        raise AuthenticationError("Invalid authentication token") from exc
+
+    if payload.get("typ") != expect:
+        raise AuthenticationError(f"Expected a {expect} token")
+    if payload.get("pt") != "platform":
+        raise AuthenticationError("Not a platform credential")
+
+    try:
+        return PlatformClaims(
+            subject=UUID(payload["sub"]),
+            email=payload.get("email", ""),
+            token_type=expect,
+            token_version=int(payload.get("tv", 0)),
+            jti=str(payload.get("jti", "")),
             expires_at=datetime.fromtimestamp(payload["exp"], tz=UTC),
         )
     except (KeyError, ValueError) as exc:

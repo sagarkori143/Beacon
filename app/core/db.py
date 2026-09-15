@@ -42,6 +42,12 @@ log = get_logger(__name__)
 #: Name of the PostgreSQL setting RLS policies read.
 ORG_GUC = "app.current_org_id"
 
+#: Set by a platform operator's session. It widens visibility of the
+#: `organizations` table only -- every tenant table still requires
+#: `app.current_org_id`, so even an operator cannot read two tenants' rows in one
+#: transaction. See docs/tenant-isolation.md.
+PLATFORM_GUC = "app.platform_admin"
+
 _engine: AsyncEngine | None = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 
@@ -165,6 +171,33 @@ async def tenant_session(
     maker = sessionmaker or get_sessionmaker()
     async with maker() as session, session.begin():
         await _apply_session_guards(session, organization_id, settings)
+        yield session
+
+
+@asynccontextmanager
+async def platform_session(
+    organization_id: UUID | None,
+    settings: Settings,
+    *,
+    sessionmaker: async_sessionmaker[AsyncSession] | None = None,
+) -> AsyncIterator[AsyncSession]:
+    """A session for a platform operator provisioning tenants.
+
+    Two things are true at once, and both matter:
+
+    * ``app.platform_admin`` is set, which lets the session enumerate and create
+      rows in ``organizations``. Ordinary tenant sessions cannot.
+    * Tenant tables are **unchanged**: they still key on ``app.current_org_id``.
+      Passing ``organization_id`` scopes the session to exactly that tenant;
+      passing ``None`` means no tenant table is readable at all.
+
+    So an operator can list every organization, and can act inside one they name
+    -- but no single transaction ever spans two of them.
+    """
+    maker = sessionmaker or get_sessionmaker()
+    async with maker() as session, session.begin():
+        await _apply_session_guards(session, organization_id, settings)
+        await session.execute(text(f"SELECT set_config('{PLATFORM_GUC}', 'on', true)"))
         yield session
 
 

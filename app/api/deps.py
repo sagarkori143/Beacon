@@ -23,6 +23,7 @@ from app.services.agent.router import ModelRouter
 from app.services.agent.runtime import AgentRuntime
 from app.services.auth.service import AuthService
 from app.services.documents.service import DocumentService
+from app.services.platform.service import PlatformService
 from app.services.retrieval.service import Retriever
 from app.tools.registry import ToolRegistry
 
@@ -61,6 +62,10 @@ def get_auth_service(request: Request) -> AuthService:
 
 def get_document_service(request: Request) -> DocumentService:
     return request.app.state.document_service
+
+
+def get_platform_service(request: Request) -> PlatformService:
+    return request.app.state.platform_service
 
 
 def get_trace(request: Request) -> TraceContext:

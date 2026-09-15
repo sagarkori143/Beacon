@@ -86,6 +86,14 @@ seed:  ## Seed the Sagar Hotels demo tenant (runs in the api container)
 reseed:  ## Delete and re-create the demo tenant
 	docker compose exec -T -e DATABASE_URL="$(OWNER_URL_IN_COMPOSE)" api python -m scripts.seed_demo --reset
 
+.PHONY: owner
+owner:  ## Create a platform operator: make owner email=you@example.com
+	docker compose exec -T -e DATABASE_URL="$(OWNER_URL_IN_COMPOSE)" api python -m scripts.create_owner --email "$(email)"
+
+.PHONY: owners
+owners:  ## List platform operators
+	docker compose exec -T -e DATABASE_URL="$(OWNER_URL_IN_COMPOSE)" api python -m scripts.create_owner --list
+
 .PHONY: seed-local
 seed-local:  ## Seed when running the app on the host (make services + make api)
 	DATABASE_URL="postgresql+asyncpg://app:app@localhost:5432/agentdb" $(PY) -m scripts.seed_demo

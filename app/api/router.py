@@ -4,13 +4,24 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.v1 import auth, chat, documents, health, ingestion, organizations, search
+from app.api.v1 import (
+    auth,
+    chat,
+    documents,
+    health,
+    ingestion,
+    organizations,
+    platform,
+    search,
+)
 
 
 def build_api_router(prefix: str) -> APIRouter:
     """Versioned routes, mounted under the configured prefix."""
     router = APIRouter(prefix=prefix)
     router.include_router(auth.router)
+    # Platform endpoints accept only a platform credential; see api/v1/platform.py.
+    router.include_router(platform.router)
     router.include_router(organizations.router)
     router.include_router(documents.router)
     router.include_router(ingestion.router)

@@ -37,6 +37,7 @@ from app.services.agent.router import ModelRouter
 from app.services.agent.runtime import AgentRuntime
 from app.services.auth.service import AuthService
 from app.services.documents.service import DocumentService
+from app.services.platform.service import PlatformService
 from app.services.retrieval.service import Retriever
 from app.tools.registry import build_default_registry
 
@@ -73,6 +74,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.retriever = retriever
     app.state.auth_service = AuthService(settings)
     app.state.document_service = DocumentService(settings, providers)
+    app.state.platform_service = PlatformService(settings)
     app.state.agent = AgentRuntime(
         settings=settings,
         providers=providers,

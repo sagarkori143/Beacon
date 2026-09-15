@@ -12,6 +12,7 @@ from app.models.conversation import Conversation, ConversationMessage
 from app.models.document import Document, DocumentVersion
 from app.models.ingestion import IngestionJob, IngestionJobEvent
 from app.models.organization import Location, Organization
+from app.models.platform import PlatformUser
 from app.models.user import User, UserDirectory
 
 __all__ = [
@@ -27,6 +28,7 @@ __all__ = [
     "IngestionJobEvent",
     "Location",
     "Organization",
+    "PlatformUser",
     "User",
     "UserDirectory",
 ]
@@ -51,5 +53,6 @@ GLOBAL_TABLES: dict[str, str] = {
     "organizations": "the tenant roots themselves; policy restricts to own row",
     "embedding_spaces": "vector-space registry, contains no tenant data",
     "user_directory": "minimal email -> organization map needed to resolve login",
+    "platform_users": "operators of the deployment; belong to no organization",
     "alembic_version": "migration bookkeeping",
 }

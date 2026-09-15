@@ -77,6 +77,28 @@ class Principal:
         return self.is_admin or scope in self.scopes
 
 
+@dataclass(frozen=True, slots=True)
+class PlatformPrincipal:
+    """An operator of the deployment, belonging to no organization.
+
+    Deliberately a *separate type* from :class:`Principal` rather than another
+    role on it. Tenant endpoints depend on ``Principal``, so a platform token
+    cannot satisfy them by accident -- the type system refuses it before any
+    permission check runs.
+
+    To act inside an organization a platform owner names it explicitly, and the
+    database session is scoped to that one organization. No request ever sees
+    two tenants' rows.
+    """
+
+    user_id: UUID
+    email: str
+
+    def scope_to(self, organization_id: UUID) -> TenantContext:
+        """The tenant this operator is acting on behalf of, for one request."""
+        return TenantContext(organization_id=organization_id)
+
+
 #: Scopes granted implicitly by role. Kept here so tools and endpoints agree.
 ROLE_SCOPES: dict[Role, frozenset[str]] = {
     Role.USER: frozenset({"knowledge:read", "tools:basic"}),

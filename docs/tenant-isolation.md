@@ -138,11 +138,54 @@ properly scoped session. The exposure is an email-to-organization mapping and
 nothing else.
 
 `embedding_spaces` is also global: it is a registry of `(model, dimension)`
-pairs and contains no tenant data.
+pairs and contains no tenant data. So is `platform_users` — see below.
 
-Both are listed in `app/models/__init__.py::GLOBAL_TABLES`, and an integration
+All are listed in `app/models/__init__.py::GLOBAL_TABLES`, and an integration
 test asserts that **no other table** lacks RLS — so nothing ends up outside
 tenant scoping by accident.
+
+---
+
+## Platform operators
+
+Someone has to create the tenants. That role cannot itself be a tenant user, so
+`platform_users` is a second, separate credential type: accounts that belong to
+no organization, authenticate at `/platform/auth/login`, and carry `"pt":
+"platform"` in their token.
+
+**The two token types are mutually exclusive, enforced in the decoder.**
+`decode_token` rejects anything that is not a tenant token and
+`decode_platform_token` rejects anything that is not a platform token — before
+any permission check runs, so a carelessly wired dependency cannot let one stand
+in for the other. A platform token is refused by every tenant endpoint; a tenant
+token is refused by every `/platform` endpoint.
+
+Creating a tenant needs one narrow widening, since the `organizations` policy
+restricts a session to its own row and a brand-new organization is nobody's own
+row yet. A second GUC handles it:
+
+```sql
+-- migrations/.../7a2f5c91b4e3
+CREATE POLICY tenant_isolation ON organizations
+    USING      (id = nullif(current_setting('app.current_org_id', true), '')::uuid
+                OR current_setting('app.platform_admin', true) = 'on')
+    WITH CHECK (... same ...);
+```
+
+`WITH CHECK` is what admits the INSERT; `USING` is what admits the listing.
+
+**The widening covers `organizations` and nothing else.** Every tenant table
+still keys on `app.current_org_id` alone, so `platform_session(org_id)` scopes a
+platform operator to exactly one tenant, and `platform_session(None)` reads no
+tenant table at all. The invariant survives intact:
+
+> No credential in the system — tenant or platform — can read two organizations'
+> data in one transaction.
+
+That is why an operator can create an organization, its locations and its users,
+but cannot read anyone's documents, chunks or conversations. To do that they
+create themselves a user in that organization, which is an audited action and
+leaves the invariant standing.
 
 ---
 
@@ -165,3 +208,14 @@ the live schema rather than spot-checking it:
 covers the guarantee end-to-end, in both directions: across organizations, and
 across locations within one organization. The second is the easier one to get
 wrong and the one a customer notices first.
+
+[`tests/integration/test_platform.py`](../tests/integration/test_platform.py)
+covers the operator boundary: that the two token types reject each other, that a
+`platform_session` with no organization named reads zero rows from `users`,
+`documents` and `chunks`, and that a tenant provisioned through the API is
+isolated *once it holds knowledge* — it retrieves its own document and a
+different organization retrieves none of it. Two rules in
+[`tests/unit/test_architecture.py`](../tests/unit/test_architecture.py) stop the
+boundary eroding: every `/platform` endpoint must take the operator dependency,
+and only `api/v1/platform.py` may mention `decode_platform_token` or
+`PlatformPrincipal`.

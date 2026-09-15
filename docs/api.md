@@ -20,6 +20,10 @@ Every endpoint except `/health` and `/auth/login` needs
 **The token carries the tenant.** No endpoint accepts an `organization_id` from
 the client.
 
+There is a second, separate credential type for whoever runs the deployment —
+see [Platform operators](#platform-operators) below. The two reject each other:
+a platform token is `401` on every endpoint in this section, and vice versa.
+
 ### `POST /auth/login`
 
 ```json
@@ -352,9 +356,215 @@ browser tab does not hold a model-server slot.
 `GET /organizations/me`, `GET /locations`, `GET /locations/{id}`,
 `POST /locations` *(admin)*.
 
-There is no "list organizations": a caller's organization comes from their token,
-and the only one they can ever see is their own. A user pinned to one location
-sees only that location in `GET /locations`.
+There is no "list organizations" for a tenant caller: their organization comes
+from their token, and the only one they can ever see is their own. A user pinned
+to one location sees only that location in `GET /locations`. (Platform operators
+do get a listing — of names, not knowledge; see below.)
+
+---
+
+## Platform operators
+
+A second credential type, for whoever runs the deployment. Platform operators
+belong to no organization: they create tenants, their locations and their users.
+
+**Platform and tenant tokens reject each other.** A platform token gets `401` on
+every tenant endpoint, and a tenant token gets `401` on every `/platform`
+endpoint — checked in the token decoder, before any permission logic. An
+organization ADMIN therefore cannot reach these endpoints no matter what.
+
+What an operator **cannot** do is read a tenant's documents, search results or
+conversations. To do that they create themselves a user in that organization,
+which is an audited action. See [tenant-isolation.md](tenant-isolation.md).
+
+### Bootstrapping the first operator
+
+There is no endpoint for this on purpose — an endpoint that mints the first
+all-powerful account is an open door until someone remembers to close it. It is
+a local command, run where the database is reachable:
+
+```bash
+docker compose exec -e DATABASE_URL=postgresql+asyncpg://app:app@postgres:5432/agentdb \
+  api python -m scripts.create_owner --email owner@example.com
+```
+
+It prints a generated password once. `--password` sets your own; `--list` shows
+existing operators. Further operators are created through
+`POST /platform/operators`.
+
+### `POST /platform/auth/login`
+
+```json
+{"email": "owner@sagar.dev", "password": "..."}
+```
+
+Returns `access_token` / `refresh_token` plus `"principal_type": "platform"`, so
+a client can tell the two credential kinds apart without decoding the token.
+`POST /platform/auth/refresh` takes only the refresh token — requiring an access
+token would defeat the purpose — and re-reads the operator row, so a disabled
+account is refused there rather than at token expiry.
+
+### `GET /platform/auth/me`
+
+States the boundary in the response, so it is answerable without reading docs:
+
+```json
+{
+  "user_id": "8ac86a6f-4034-422a-87bc-2707c4721009",
+  "email": "owner@sagar.dev",
+  "principal_type": "platform",
+  "can": [
+    "create organizations",
+    "create locations in any organization",
+    "create users in any organization",
+    "enable/disable users"
+  ],
+  "cannot": [
+    "read any tenant's documents, search results or conversations"
+  ]
+}
+```
+
+### `GET /platform/organizations`
+
+Every tenant on the deployment. This is the only listing in the API that spans
+organizations, and it returns names, not knowledge.
+
+```json
+[
+  {
+    "id": "ea9ad329-db1d-4c08-97ee-b82ae677e99d",
+    "name": "Aurora Clinics",
+    "slug": "aurora-clinics",
+    "is_active": true,
+    "created_at": "2026-09-15T20:09:20.123761Z"
+  },
+  {
+    "id": "8fc376a6-4108-4454-94a0-67b89c14d0ac",
+    "name": "Sagar Hotels",
+    "slug": "sagar-hotels",
+    "is_active": true,
+    "created_at": "2026-09-15T19:57:17.223005Z"
+  }
+]
+```
+
+`GET /platform/organizations/{id}` returns one.
+
+### `POST /platform/organizations` → `201`
+
+```json
+{"name": "Northwind Dental", "admin_email": "admin@northwind.example"}
+```
+
+```json
+{
+  "organization": {
+    "id": "b520e95f-24f4-4c8c-8f31-77ed2770da41",
+    "name": "Northwind Dental",
+    "slug": "northwind-dental",
+    "is_active": true,
+    "created_at": "2026-09-15T20:20:32.668437Z"
+  },
+  "admin_email": "admin@northwind.example",
+  "admin_password": "T5C-qEG-JFioSNrxQ6knL4PL"
+}
+```
+
+The first administrator is created in the same call, because an organization
+with no administrator cannot be managed and you would make the second call
+immediately anyway. Omit `admin_password` and one is generated and returned
+**once** — it is stored only as a hash and cannot be retrieved again. Supply
+your own and `admin_password` comes back `null`, since echoing a password you
+already know adds nothing but a second place for it to leak.
+
+`slug` is derived from the name when omitted. A duplicate slug is `409`.
+
+### `POST /platform/organizations/{id}/locations` → `201`
+
+```json
+{"name": "Northwind Camden", "timezone": "Europe/London"}
+```
+
+```json
+{
+  "id": "fc70a34b-c47a-4029-8c94-9a24966d7949",
+  "organization_id": "b520e95f-24f4-4c8c-8f31-77ed2770da41",
+  "name": "Northwind Camden",
+  "slug": "northwind-camden",
+  "timezone": "Europe/London",
+  "is_active": true,
+  "settings": {}
+}
+```
+
+`GET /platform/organizations/{id}/locations` lists them, including inactive ones.
+
+### `POST /platform/organizations/{id}/users` → `201`
+
+```json
+{
+  "email": "patient@northwind.example",
+  "password": "patient-password-123",
+  "role": "USER",
+  "location_id": null
+}
+```
+
+```json
+{
+  "id": "1fd98d8a-efd9-4042-837d-b9f032bba29b",
+  "organization_id": "b520e95f-24f4-4c8c-8f31-77ed2770da41",
+  "email": "patient@northwind.example",
+  "full_name": null,
+  "role": "USER",
+  "location_id": null,
+  "is_active": true,
+  "created_at": "2026-09-15T20:20:43.511758Z"
+}
+```
+
+The two roles, and what each gets:
+
+| | `ADMIN` | `USER` |
+|---|---|---|
+| Search and chat over their own knowledge | yes | yes |
+| Ingestion job status, events and queue depth | yes | yes |
+| Upload documents, create versions, activate a version | yes | no |
+| Create locations and users in their own organization | yes | no |
+| Admin-scoped tools (`tools:admin`) | yes | no |
+| Anything under `/platform` | no | no |
+| Reach another organization | never | never |
+
+Scopes come from the role — `app/core/tenancy.py::ROLE_SCOPES` — so endpoints
+and tools agree on one definition rather than each deciding for itself. Note
+that ingestion *visibility* is not admin-gated: a user can see the progress of
+their organization's jobs, which is org-scoped like everything else, while only
+an admin can start one.
+
+`location_id` pins a user to one location. They then see that location's
+knowledge **plus** organization-wide knowledge, with the location's version
+winning on any topic both cover — and they can never reach another location's.
+Leave it `null` for organization-wide access.
+
+Email addresses are unique across the whole deployment, because the login
+directory that resolves an address to an organization is global. A duplicate is
+`409`, an unknown organization `404`.
+
+`GET /platform/organizations/{id}/users` lists them.
+
+### `POST /platform/organizations/{org}/users/{user}/disable` · `.../enable`
+
+Disabling sets `is_active = false` and bumps the user's `token_version`, which
+blocks login and refresh from that moment.
+
+Be precise about what that means, because the difference matters during an
+incident: an access token already in the user's hands keeps working until it
+expires. Access tokens are not re-checked against the database on each request —
+that would be a round trip per call — so revocation lands at the next refresh.
+The window is the access-token lifetime, `SECURITY__ACCESS_TOKEN_TTL_S`,
+30 minutes by default. Shorten it if you need revocation to bite faster; that
+trades latency and database load for a tighter window.
 
 ---
 

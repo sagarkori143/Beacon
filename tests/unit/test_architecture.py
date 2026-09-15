@@ -182,3 +182,45 @@ class TestSecretHygiene:
             if suspicious.search(path.read_text(encoding="utf-8"))
         ]
         assert not violations, f"possible hardcoded credential: {violations}"
+
+
+class TestCredentialBoundary:
+    """The two credential kinds must not drift into each other.
+
+    A platform operator provisions tenants; a tenant principal reads tenant
+    data. The moment one endpoint accepts both, "no credential can see two
+    organizations' data" stops being true -- and nothing would fail loudly,
+    because both tokens are valid JWTs signed with the same key.
+    """
+
+    #: Not authentication boundaries: login and refresh exchange credentials,
+    #: so requiring one is circular.
+    _UNAUTHENTICATED = frozenset({"login", "refresh"})
+
+    def test_every_platform_endpoint_requires_an_operator(self) -> None:
+        from app.api.v1 import platform
+
+        unguarded = [
+            name
+            for name, fn in vars(platform).items()
+            if callable(fn)
+            and getattr(fn, "__module__", None) == platform.__name__
+            and name not in {"current_operator"}
+            and name not in self._UNAUTHENTICATED
+            and "operator" not in getattr(fn, "__annotations__", {})
+        ]
+        assert not unguarded, (
+            "platform endpoints must take the operator dependency:\n  " + "\n  ".join(unguarded)
+        )
+
+    def test_no_tenant_endpoint_accepts_a_platform_credential(self) -> None:
+        """Only api/v1/platform.py may resolve a platform token."""
+        offenders = [
+            path.relative_to(APP_ROOT.parent).as_posix()
+            for path in (APP_ROOT / "api").rglob("*.py")
+            if path.name != "platform.py"
+            and re.search(r"decode_platform_token|PlatformPrincipal", path.read_text("utf-8"))
+        ]
+        assert not offenders, (
+            "platform credentials must stay inside api/v1/platform.py:\n  " + "\n  ".join(offenders)
+        )

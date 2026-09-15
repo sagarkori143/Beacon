@@ -254,20 +254,30 @@ async def owner_engine() -> AsyncIterator[object]:
 
 
 @pytest.fixture
-async def fake_embedding_space(owner_engine: object, fake_embeddings) -> None:
-    """Make the fake provider's embedding space the current one.
+async def fake_embedding_space(owner_engine: object, fake_embeddings) -> AsyncIterator[None]:
+    """Make the fake provider's embedding space the current one, then put it back.
 
     The pipeline refuses to write vectors from a provider that is not the
     current space -- that is the point of the mechanism, and it is what stops
     one model's vectors being labelled as another's. A test database whose
     current space was set by a real run of the application therefore has to be
     pointed at the provider the tests actually use.
+
+    The restore afterwards is not tidiness. `embedding_spaces` is global, not
+    tenant-scoped, so a test run against a shared development database leaves
+    `fake` current for everyone -- and the application's boot guard then
+    *correctly* refuses to start, because the configured provider no longer
+    matches the indexed vectors. Working as designed, but a confusing way to
+    find out. So the previous current space is restored even when a test fails.
     """
     from sqlalchemy import text
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     maker = async_sessionmaker(owner_engine, expire_on_commit=False, autoflush=False)  # type: ignore[arg-type]
     async with maker() as session, session.begin():
+        previous = (
+            await session.execute(text("SELECT id FROM embedding_spaces WHERE is_current LIMIT 1"))
+        ).scalar_one_or_none()
         await session.execute(
             text("UPDATE embedding_spaces SET is_current = false WHERE is_current")
         )
@@ -286,6 +296,19 @@ async def fake_embedding_space(owner_engine: object, fake_embeddings) -> None:
                 "d": fake_embeddings.dimension,
             },
         )
+
+    try:
+        yield None
+    finally:
+        if previous is not None:
+            async with maker() as session, session.begin():
+                await session.execute(
+                    text("UPDATE embedding_spaces SET is_current = false WHERE is_current")
+                )
+                await session.execute(
+                    text("UPDATE embedding_spaces SET is_current = true WHERE id = :id"),
+                    {"id": previous},
+                )
 
 
 @pytest.fixture

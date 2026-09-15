@@ -170,3 +170,10 @@ class AuditAction(StrEnum):
     VERSION_FAIL = "VERSION_FAIL"
     TOOL_DENIED = "TOOL_DENIED"
     CHAT = "CHAT"
+    # Platform-operator actions. Recorded against the organization they touch,
+    # so a tenant's audit trail shows provisioning done on their behalf.
+    ORGANIZATION_CREATE = "ORGANIZATION_CREATE"
+    LOCATION_CREATE = "LOCATION_CREATE"
+    USER_CREATE = "USER_CREATE"
+    USER_DISABLE = "USER_DISABLE"
+    USER_ENABLE = "USER_ENABLE"

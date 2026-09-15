@@ -67,6 +67,51 @@ the group document, with no trace of Ginza.
 processing, search, versioning. `GET /health` stays green; `GET /health/ready`
 tells you what is degraded.
 
+### Where do I log in? There is no UI yet
+
+Nowhere — and that is the point. This is a backend; the credentials above are
+for HTTP calls. Use `http://localhost:8000/docs` (Swagger UI: **Authorize**,
+paste the `access_token`), `curl`, Postman, or the frontend you build against it.
+
+### Your own account, and creating real tenants
+
+`seed_demo` makes a demo tenant. For your own, create a **platform operator** —
+an account that belongs to no organization and exists to provision them:
+
+```bash
+docker compose exec \
+  -e DATABASE_URL="postgresql+asyncpg://app:app@postgres:5432/agentdb" \
+  api python -m scripts.create_owner --email you@example.com
+```
+
+It prints a generated password once (`--password` sets your own). Then:
+
+```bash
+OWNER=$(curl -s localhost:8000/api/v1/platform/auth/login \
+  -H 'content-type: application/json' \
+  -d '{"email":"you@example.com","password":"<printed>"}' \
+  | python -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+
+# An organization, with its first admin. The admin password is returned ONCE.
+curl -s -X POST localhost:8000/api/v1/platform/organizations \
+  -H "authorization: Bearer $OWNER" -H 'content-type: application/json' \
+  -d '{"name":"Northwind Dental","admin_email":"admin@northwind.example"}'
+
+# A customer in it. role=USER, optionally pinned to a location.
+curl -s -X POST localhost:8000/api/v1/platform/organizations/<org-id>/users \
+  -H "authorization: Bearer $OWNER" -H 'content-type: application/json' \
+  -d '{"email":"guest@northwind.example","password":"guest-password-123","role":"USER"}'
+```
+
+That admin then logs in at the ordinary `/auth/login` and manages their own
+organization; the customer logs in there too and can only search and chat.
+
+**The operator token is not a master key.** It provisions tenants; it cannot read
+anyone's documents, search or conversations, and every tenant endpoint rejects
+it. That is deliberate — it keeps "no credential can see two organizations' data"
+true without exceptions. Full reference: [docs/api.md](docs/api.md#platform-operators)
+and [docs/tenant-isolation.md](docs/tenant-isolation.md#platform-operators).
+
 ---
 
 ## What it does
