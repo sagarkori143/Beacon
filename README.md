@@ -19,20 +19,33 @@ duplicated per location, and no location can reach another's knowledge.
 
 ## Quick start
 
-You need Docker, and a model server reachable over HTTP. **Ollama normally runs
-on a separate machine** — a GPU box, or another server. The backend only ever
-knows a URL.
+You need Docker, and **Ollama running and reachable before you seed** — seeding
+embeds the demo documents, so it fails without it. Ollama normally runs on a
+separate machine (a GPU box, another server); the backend only ever knows a URL.
 
 ```bash
-# 1. On your model server
+# 1. On your model server — both models, and leave it running
 ollama pull qwen2.5:7b-instruct      # or whatever you prefer
 ollama pull nomic-embed-text
 
 # 2. Here
-cp .env.example .env                  # set OLLAMA_BASE_URL to your model server
-make up                               # postgres, redis, api, worker
-make seed                             # the Sagar Hotels demo tenant
+cp .env.example .env
+#    Ollama on this machine?  OLLAMA_BASE_URL=http://host.docker.internal:11434  (default)
+#    Ollama elsewhere?        OLLAMA_BASE_URL=http://<host>:11434
+
+docker compose up -d --build         # postgres, redis, api, worker + migrations
+docker compose exec -T -e DATABASE_URL="postgresql+asyncpg://app:app@postgres:5432/agentdb" \
+    api python -m scripts.seed_demo  # the Sagar Hotels demo tenant
 ```
+
+With GNU Make installed those last two are `make up` and `make seed`; `make help`
+lists the rest. Everything works without Make — the Makefile is a convenience,
+not a dependency.
+
+Seeding runs **inside** the api container and as the database owner, because the
+`postgres` hostname only resolves on the compose network, and creating a tenant
+is deliberately outside what the application role can do
+([why](docs/tenant-isolation.md#2-row-level-security)).
 
 Then open http://localhost:8000/docs, or:
 
@@ -127,16 +140,24 @@ convention.
 ## Development
 
 ```bash
-make install          # venv + dependencies
-make services         # postgres + redis only
-make migrate seed     # schema + demo data
-make api              # uvicorn with reload
-make worker           # in another terminal
+python -m venv .venv && .venv/Scripts/pip install -e ".[dev]"   # .venv/bin on unix
+docker compose up -d postgres redis                             # services only
 
-make test             # unit tests, no services needed
-make test-all         # everything (needs postgres + redis)
-make check            # lint + type-check + unit tests
+# Migrations and seeding connect as the owner; the app itself uses app_rw.
+export DATABASE_URL="postgresql+asyncpg://app:app@localhost:5432/agentdb"
+.venv/Scripts/python -m alembic upgrade head
+.venv/Scripts/python -m scripts.seed_demo
+unset DATABASE_URL
+
+.venv/Scripts/python -m uvicorn app.main:app --reload --port 8000
+.venv/Scripts/python -m app.workers.runner                      # another terminal
+
+.venv/Scripts/python -m pytest tests/unit    # no services needed
+.venv/Scripts/python -m pytest tests         # everything
 ```
+
+With Make: `make install`, `make services`, `make migrate`, `make seed-local`,
+`make api`, `make worker`, `make test`, `make test-all`, `make check`.
 
 Tests never require a model server: the fake LLM and embedding providers
 implement the same interfaces, so the code under test takes the production path.

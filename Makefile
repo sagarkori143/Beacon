@@ -71,13 +71,24 @@ migration:  ## Generate a migration: make migration m="add x"
 downgrade:  ## Roll back one migration
 	DATABASE_URL=$(TEST_OWNER_DATABASE_URL) $(PY) -m alembic downgrade -1
 
+# Seeding runs INSIDE the api container, as the owner role. Two reasons:
+# the `postgres` hostname only resolves on the compose network, and creating an
+# organization is deliberately outside what app_rw can do -- the policy on
+# `organizations` restricts a session to its own row, so there is no tenant
+# context under which a new tenant can be inserted.
+OWNER_URL_IN_COMPOSE = postgresql+asyncpg://app:app@postgres:5432/agentdb
+
 .PHONY: seed
-seed:  ## Seed the Sagar Hotels demo tenant
-	$(PY) -m scripts.seed_demo
+seed:  ## Seed the Sagar Hotels demo tenant (runs in the api container)
+	docker compose exec -T -e DATABASE_URL="$(OWNER_URL_IN_COMPOSE)" api python -m scripts.seed_demo
 
 .PHONY: reseed
 reseed:  ## Delete and re-create the demo tenant
-	$(PY) -m scripts.seed_demo --reset
+	docker compose exec -T -e DATABASE_URL="$(OWNER_URL_IN_COMPOSE)" api python -m scripts.seed_demo --reset
+
+.PHONY: seed-local
+seed-local:  ## Seed when running the app on the host (make services + make api)
+	DATABASE_URL="postgresql+asyncpg://app:app@localhost:5432/agentdb" $(PY) -m scripts.seed_demo
 
 # --- running -----------------------------------------------------------------
 
