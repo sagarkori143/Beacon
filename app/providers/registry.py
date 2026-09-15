@@ -159,6 +159,7 @@ def build_providers(
     redis: Redis | None = None,
     include_queue: bool = True,
     include_search: bool = True,
+    include_ocr: bool = True,
 ) -> ProviderBundle:
     """Construct the bundle. Pure configuration in, providers out."""
     bundle = ProviderBundle()
@@ -193,11 +194,16 @@ def build_providers(
         bundle.skipped["storage"] = str(exc)[:300]
         log.error("storage_provider_failed", reason=str(exc)[:200])
 
-    try:
-        bundle.ocr = build_ocr_provider(settings.ocr)
-    except Exception as exc:  # noqa: BLE001
-        bundle.skipped["ocr"] = str(exc)[:300]
-        log.error("ocr_provider_failed", reason=str(exc)[:200])
+    # OCR belongs to the worker. The API image deliberately ships without an
+    # OCR engine -- parsing untrusted uploads does not happen in the process
+    # serving requests -- so building one there would report a permanently
+    # unhealthy provider for a capability that process never uses.
+    if include_ocr:
+        try:
+            bundle.ocr = build_ocr_provider(settings.ocr)
+        except Exception as exc:  # noqa: BLE001
+            bundle.skipped["ocr"] = str(exc)[:300]
+            log.error("ocr_provider_failed", reason=str(exc)[:200])
 
     # --- queue (needs a Redis handle for the default implementation) ---
     if include_queue:

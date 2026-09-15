@@ -309,14 +309,40 @@ class IngestionPipeline:
         embeddings_provider = self.providers.require_embeddings()
 
         async with uow.begin() as session:
-            space = await space_repo.get_current_space(session)
-            if space is None:
+            # Stamp chunks with the space of the provider that is *actually*
+            # producing these vectors, not merely with whatever space happens to
+            # be current. Taking the current space on trust would label vectors
+            # from one model as belonging to another -- which is exactly the
+            # silent corruption the embedding-space mechanism exists to prevent,
+            # and it would survive every validation gate.
+            space = await space_repo.ensure_space(
+                session,
+                provider_type=embeddings_provider.provider_type,
+                model=embeddings_provider.model,
+                dimension=embeddings_provider.dimension,
+                make_current=False,
+            )
+            current = await space_repo.get_current_space(session)
+
+            if current is None:
+                # First ingestion into an empty index: adopt this space.
                 space = await space_repo.ensure_space(
                     session,
-                    provider_type=embeddings_provider.name,
+                    provider_type=embeddings_provider.provider_type,
                     model=embeddings_provider.model,
                     dimension=embeddings_provider.dimension,
+                    make_current=True,
                 )
+            elif current.id != space.id:
+                raise IngestionError(
+                    f"Embedding provider is {space.describe()} but the index holds "
+                    f"{current.describe()}. Writing these vectors would make them "
+                    f"incomparable to everything already indexed. See the "
+                    f"re-embedding procedure in docs/providers.md.",
+                    stage=IngestionStage.EMBEDDING.value,
+                    retryable=False,
+                )
+
             state.embedding_space_id = space.id
 
         try:

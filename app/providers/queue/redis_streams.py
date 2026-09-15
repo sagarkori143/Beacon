@@ -20,6 +20,7 @@ from typing import Any
 
 from redis.asyncio import Redis
 from redis.exceptions import ResponseError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from app.core.config import QueueSettings
 from app.core.logging import get_logger
@@ -74,7 +75,14 @@ class RedisStreamsQueue(QueueProvider):
     async def consume(
         self, *, consumer: str, count: int = 1, block_ms: int = 5000
     ) -> list[DeliveredMessage]:
-        """Read new messages, blocking briefly when the stream is empty."""
+        """Read new messages, blocking briefly when the stream is empty.
+
+        An idle queue is the normal case, and redis-py signals it by raising:
+        since 8.x it applies the block duration as a read deadline and raises
+        ``TimeoutError`` rather than returning an empty result. Letting that
+        propagate crash-loops the worker on any quiet period -- which is most
+        of them.
+        """
         try:
             response = await self.redis.xreadgroup(
                 groupname=self.group,
@@ -83,6 +91,8 @@ class RedisStreamsQueue(QueueProvider):
                 count=count,
                 block=block_ms,
             )
+        except RedisTimeoutError:
+            return []
         except ResponseError as exc:
             if "NOGROUP" in str(exc):
                 await self.setup()
@@ -129,6 +139,8 @@ class RedisStreamsQueue(QueueProvider):
                 start_id="0-0",
                 count=count,
             )
+        except RedisTimeoutError:
+            return []
         except ResponseError as exc:
             if "NOGROUP" in str(exc):
                 await self.setup()

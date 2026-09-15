@@ -254,7 +254,42 @@ async def owner_engine() -> AsyncIterator[object]:
 
 
 @pytest.fixture
-async def seeded_org(owner_engine: object) -> AsyncIterator[dict]:
+async def fake_embedding_space(owner_engine: object, fake_embeddings) -> None:
+    """Make the fake provider's embedding space the current one.
+
+    The pipeline refuses to write vectors from a provider that is not the
+    current space -- that is the point of the mechanism, and it is what stops
+    one model's vectors being labelled as another's. A test database whose
+    current space was set by a real run of the application therefore has to be
+    pointed at the provider the tests actually use.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    maker = async_sessionmaker(owner_engine, expire_on_commit=False, autoflush=False)  # type: ignore[arg-type]
+    async with maker() as session, session.begin():
+        await session.execute(
+            text("UPDATE embedding_spaces SET is_current = false WHERE is_current")
+        )
+        await session.execute(
+            text(
+                "INSERT INTO embedding_spaces"
+                " (id, provider_type, model, dimension, normalized, is_current,"
+                "  created_at, updated_at)"
+                " VALUES (gen_random_uuid(), :p, :m, :d, true, true, now(), now())"
+                " ON CONFLICT (provider_type, model, dimension)"
+                " DO UPDATE SET is_current = true"
+            ),
+            {
+                "p": fake_embeddings.provider_type,
+                "m": fake_embeddings.model,
+                "d": fake_embeddings.dimension,
+            },
+        )
+
+
+@pytest.fixture
+async def seeded_org(owner_engine: object, fake_embedding_space: None) -> AsyncIterator[dict]:
     """Create a throwaway organization with two locations; drop it afterwards.
 
     Each test gets its own organization, so tests cannot see each other's rows
@@ -262,6 +297,7 @@ async def seeded_org(owner_engine: object) -> AsyncIterator[dict]:
     the tenant filtering works.
     """
     from sqlalchemy import text
+
     maker = async_sessionmaker(owner_engine, expire_on_commit=False, autoflush=False)  # type: ignore[arg-type]
     slug = f"test-{uuid.uuid4().hex[:10]}"
 

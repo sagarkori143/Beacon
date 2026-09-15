@@ -192,3 +192,84 @@ class TestWorkerLoop:
         stats = await worker.run(max_messages=2)
 
         assert stats.failed == 2
+
+
+class TestRedisStreams:
+    """The real backend. Skipped when Redis is not running."""
+
+    @pytest.fixture
+    async def redis_queue(self):  # type: ignore[no-untyped-def]
+        import uuid as _uuid
+
+        from redis.asyncio import Redis
+
+        from app.providers.queue.redis_streams import RedisStreamsQueue
+        from tests.conftest import TEST_REDIS_URL
+
+        client = Redis.from_url(TEST_REDIS_URL, decode_responses=True)
+        try:
+            await client.ping()
+        except Exception:  # noqa: BLE001 - absence is the answer
+            await client.aclose()
+            pytest.skip("Redis not reachable. Start it with: docker compose up -d redis")
+
+        suffix = _uuid.uuid4().hex[:8]
+        settings = QueueSettings(
+            provider="redis_streams",
+            stream=f"test-ingestion-{suffix}",
+            group="test-workers",
+            dead_letter_stream=f"test-dlq-{suffix}",
+            block_ms=300,
+        )
+        queue = RedisStreamsQueue(settings, redis=client)
+        await queue.setup()
+        try:
+            yield queue
+        finally:
+            await client.delete(settings.stream, settings.dead_letter_stream)
+            await client.aclose()
+
+    async def test_an_idle_queue_returns_empty_rather_than_raising(self, redis_queue) -> None:
+        """The bug that crash-looped the worker on every quiet period.
+
+        redis-py 8.x applies the block duration as a read deadline and raises
+        TimeoutError when a blocking XREADGROUP finds nothing -- which, for a
+        queue that is idle most of the time, is the normal case.
+        """
+        assert await redis_queue.consume(consumer="w1", count=1, block_ms=200) == []
+
+    async def test_a_full_round_trip(self, redis_queue) -> None:
+        sent = message()
+        await redis_queue.enqueue(sent)
+
+        [delivered] = await redis_queue.consume(consumer="w1", count=1, block_ms=500)
+        assert delivered.message.job_id == sent.job_id
+        assert delivered.message.organization_id == sent.organization_id
+
+        await redis_queue.ack(delivered)
+        assert (await redis_queue.stats())["pending"] == 0
+
+    async def test_abandoned_work_is_reclaimed(self, redis_queue) -> None:
+        """A worker died holding this message; another must pick it up."""
+        await redis_queue.enqueue(message())
+        [taken] = await redis_queue.consume(consumer="worker-1", count=1, block_ms=500)
+
+        reclaimed = await redis_queue.claim_stale(consumer="worker-2", min_idle_ms=0)
+        assert [d.message.job_id for d in reclaimed] == [taken.message.job_id]
+        assert await redis_queue.delivery_count(taken.id) >= 2
+
+    async def test_dead_lettering_moves_the_message(self, redis_queue) -> None:
+        await redis_queue.enqueue(message())
+        [delivered] = await redis_queue.consume(consumer="w1", count=1, block_ms=500)
+        await redis_queue.dead_letter(delivered, "unparseable")
+
+        stats = await redis_queue.stats()
+        assert stats["pending"] == 0
+        assert stats["dead_letter_length"] == 1
+
+    async def test_stats_expose_queue_depth_and_staleness(self, redis_queue) -> None:
+        """The two numbers worth alerting on."""
+        await redis_queue.enqueue(message())
+        stats = await redis_queue.stats()
+        assert stats["length"] == 1
+        assert "oldest_pending_idle_ms" in stats

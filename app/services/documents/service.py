@@ -81,8 +81,15 @@ class DocumentService:
         language: str = "en",
         description: str | None = None,
         trace: TraceContext | None = None,
+        enqueue: bool = True,
     ) -> UploadResult:
-        """Store a file, create or version a document, and queue processing."""
+        """Store a file, create or version a document, and queue processing.
+
+        ``enqueue=False`` records the job without publishing it, for callers that
+        drive the pipeline themselves. Doing both would have two runs processing
+        the same version concurrently -- which the pipeline is built to survive,
+        but which wastes the work and makes the outcome depend on their timing.
+        """
         principal.require_admin()
 
         self._validate_upload(data, content_type=content_type, filename=filename)
@@ -178,15 +185,16 @@ class DocumentService:
             metadata={"organization": str(tenant.organization_id), "checksum": checksum},
         )
 
-        await self.providers.require_queue().enqueue(
-            QueueMessage(
-                job_id=job_id,
-                organization_id=tenant.organization_id,
-                document_id=document_id,
-                document_version_id=version_id,
-                trace_id=trace.trace_id if trace else None,
+        if enqueue:
+            await self.providers.require_queue().enqueue(
+                QueueMessage(
+                    job_id=job_id,
+                    organization_id=tenant.organization_id,
+                    document_id=document_id,
+                    document_version_id=version_id,
+                    trace_id=trace.trace_id if trace else None,
+                )
             )
-        )
 
         log.info(
             "document_uploaded",

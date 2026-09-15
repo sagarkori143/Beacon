@@ -99,10 +99,10 @@ point.
 
 ---
 
-## Three things found while building this
+## Six things found while building this
 
-These were caught by tests and are worth recording, because each is the kind of
-failure that produces no error message.
+Worth recording because each produces no error message, and because the last
+three were only found by running the real stack -- no unit test would have.
 
 ### `websearch_to_tsquery` joins terms with AND
 
@@ -142,6 +142,46 @@ outranked the group's breakfast policy for a breakfast question.
 The boost is now 1.02, derived from the arithmetic: at `k=60` a boost `b` lifts
 rank `r` above rank 1 exactly when `b > (60+r)/61`, so 1.02 admits only rank 2.
 Preference wins ties; suppression handles conflicts.
+
+### `activate_version` skipped the chunk flip when already active
+
+Queue delivery is at-least-once, so a completed job can run again. That run
+re-executes INDEXING, which deletes the chunks and rewrites them **inactive**.
+Activation then hit its idempotent early-return -- "already ACTIVE, nothing to
+do" -- and never flipped them back.
+
+The result: a version marked ACTIVE whose content is invisible to every search.
+The document silently disappears, every row involved looks correct on its own,
+and nothing logs an error.
+
+Found by running the Compose stack with a worker while the seed script also
+drove the pipeline inline, so the same job genuinely ran twice. Idempotent now
+means *converging on the end state* rather than assuming it already holds, and
+[a test asserts the document stays searchable after
+reprocessing](../tests/integration/test_versioning.py) -- it returns zero hits
+without the fix.
+
+### The embedding space was keyed on the config entry's name
+
+`embedding_spaces.provider_type` was populated with the *manifest entry name*
+(`default`, `backup`) rather than the provider **type** (`ollama`, `openai`).
+Renaming a config block would therefore have invalidated every vector already
+indexed, and the same model configured under two names would have looked like
+two incompatible spaces.
+
+The registry decorator now stamps the type onto the class, so the manifest and
+the space identity cannot disagree.
+
+### redis-py 8 raises on an idle blocking read
+
+`XREADGROUP` with `block=5000` does not return an empty result when nothing
+arrives -- redis-py applies the block as a read deadline and raises
+`TimeoutError`. The worker crash-looped on every quiet period, which is most of
+them.
+
+An idle queue is the normal case, so the timeout is now treated as "no
+messages". [A Redis-backed test](../tests/integration/test_queue.py) covers it;
+the in-memory queue could not have.
 
 ---
 

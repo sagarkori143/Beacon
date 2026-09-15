@@ -232,3 +232,74 @@ class TestRollback:
 
         assert again.version_number == 1
         assert replaced is None
+
+
+class TestRedeliveryIdempotency:
+    """At-least-once delivery means a completed job can run again."""
+
+    async def test_reprocessing_an_active_version_keeps_it_searchable(
+        self, ingest, org_uow, org_tenant, pipeline, retriever
+    ) -> None:
+        """The failure this guards against is silent and total.
+
+        A redelivered message re-runs INDEXING, which deletes the chunks and
+        rewrites them inactive. If ACTIVATING then short-circuits on "already
+        active" without flipping them back, the version stays marked ACTIVE
+        while its content is invisible to every search -- and every row involved
+        looks correct on its own, so nothing reports an error.
+        """
+        document = await ingest(V1, title="Breakfast Policy")
+
+        before = await retriever.retrieve(
+            org_uow, org_tenant, queries=["breakfast serving hours"], top_k=5
+        )
+        assert before.hits
+
+        # Exactly what a redelivered queue message does.
+        await pipeline.run(
+            org_uow,
+            document.job_id,
+            tenant=org_tenant,
+            trace=TraceContext.new(),
+            worker_id="second-worker",
+        )
+
+        after = await retriever.retrieve(
+            org_uow, org_tenant, queries=["breakfast serving hours"], top_k=5
+        )
+        assert after.hits, "the document vanished from search after reprocessing"
+        assert "7:00 AM to 10:00 AM" in " ".join(h.content for h in after.hits)
+
+        version = await active_version(org_uow, org_tenant, document.document_id)
+        assert version.status is VersionStatus.ACTIVE
+
+    async def test_reprocessing_does_not_duplicate_chunks(
+        self, ingest, org_uow, org_tenant, pipeline
+    ) -> None:
+        document = await ingest(V1, title="Breakfast Policy")
+
+        async with org_uow.begin() as session:
+            first = (
+                await session.execute(
+                    text("SELECT count(*) FROM chunks WHERE document_version_id = :v"),
+                    {"v": document.version_id},
+                )
+            ).scalar_one()
+
+        await pipeline.run(
+            org_uow,
+            document.job_id,
+            tenant=org_tenant,
+            trace=TraceContext.new(),
+            worker_id="second-worker",
+        )
+
+        async with org_uow.begin() as session:
+            second = (
+                await session.execute(
+                    text("SELECT count(*) FROM chunks WHERE document_version_id = :v"),
+                    {"v": document.version_id},
+                )
+            ).scalar_one()
+
+        assert second == first

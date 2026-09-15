@@ -50,7 +50,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     init_engine(settings)
     redis = init_redis(settings)
-    providers = build_providers(settings, redis=redis)
+    # No OCR in the API: uploads are parsed by the worker, and the API image
+    # has no OCR engine installed.
+    providers = build_providers(settings, redis=redis, include_ocr=False)
 
     await _verify_application_role(settings)
     await _verify_embedding_space(settings, providers)

@@ -45,7 +45,9 @@ log = get_logger(__name__)
 
 ORG_SLUG = "sagar-hotels"
 ADMIN_EMAIL = "admin@sagarhotels.example"
-DEMO_PASSWORD = "demo-password-12345"
+#: Demo credentials for a local tenant. Not a secret, and not used anywhere
+#: outside this script.
+DEMO_PASSWORD = "demo-password-12345"  # noqa: S105
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,10 +237,13 @@ async def seed(settings: Settings, *, reset: bool = False) -> None:
             location_id=location_id,
             document_type=document.document_type,
             trace=TraceContext.new(organization_id=organization_id),
+            # This script runs the pipeline itself, so the job is recorded but
+            # not published -- otherwise a running worker would process the same
+            # version at the same time.
+            enqueue=False,
         )
-        # Run the pipeline inline so the demo is usable without a worker. In
-        # normal operation the queue message this upload enqueued is what drives
-        # it, through exactly this code.
+        # Inline, so the demo works with or without a worker running. In normal
+        # operation the queue message drives exactly this code.
         await pipeline.run(
             uow,
             result.job_id,

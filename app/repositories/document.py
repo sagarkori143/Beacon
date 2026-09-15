@@ -248,8 +248,23 @@ async def activate_version(
     )
 
     if version.status is VersionStatus.ACTIVE:
-        # Idempotent: a redelivered job finds the work already done.
-        log.info("version_already_active", version_id=str(version_id))
+        # Idempotent -- but idempotent means *converging on the end state*, not
+        # assuming it already holds.
+        #
+        # Queue delivery is at-least-once, so a second run of the same job is
+        # normal. That run re-executes INDEXING, which deletes the chunks and
+        # rewrites them inactive. Returning here without flipping them would
+        # leave a version marked ACTIVE whose content is invisible to every
+        # search: the document silently disappears, and nothing reports an
+        # error because every row involved looks correct on its own.
+        from app.repositories.chunk import set_chunks_active
+
+        restored = await set_chunks_active(session, version.id, active=True)
+        log.info(
+            "version_already_active",
+            version_id=str(version_id),
+            chunks_restored=restored,
+        )
         return version, None
 
     if version.status is VersionStatus.FAILED:

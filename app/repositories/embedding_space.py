@@ -155,7 +155,7 @@ async def verify_embedding_space(
 
     space = await ensure_space(
         session,
-        provider_type=provider.name,
+        provider_type=provider.provider_type,
         model=provider.model,
         dimension=provider.dimension,
         normalized=getattr(provider, "normalize", True),
@@ -167,7 +167,7 @@ async def verify_embedding_space(
         # First boot: adopt the configured provider's space.
         await ensure_space(
             session,
-            provider_type=provider.name,
+            provider_type=provider.provider_type,
             model=provider.model,
             dimension=provider.dimension,
             normalized=getattr(provider, "normalize", True),

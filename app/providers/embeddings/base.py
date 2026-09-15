@@ -33,7 +33,17 @@ log = get_logger(__name__)
 
 
 class EmbeddingProvider(ABC):
+    #: The manifest entry's name ("default", "backup", ...). Identifies *this
+    #: configured instance*.
     name: str
+    #: The registry type ("ollama", "openai", ...). Set automatically by
+    #: @register_embedding_provider.
+    #:
+    #: Embedding-space identity uses this rather than `name`, because renaming a
+    #: manifest entry must not invalidate every vector already indexed -- the
+    #: space is a property of the model, not of what an operator called the
+    #: config block.
+    provider_type: str = "unknown"
     model: str
     dimension: int
     normalize: bool
@@ -92,6 +102,9 @@ def register_embedding_provider(type_name: str) -> Callable[[TEmbedding], TEmbed
         if type_name in _EMBEDDING_TYPES and _EMBEDDING_TYPES[type_name] is not cls:
             raise ConfigurationError(f"Duplicate embedding provider type '{type_name}'")
         _EMBEDDING_TYPES[type_name] = cls
+        # Stamp the registry key onto the class so embedding-space identity and
+        # the manifest cannot disagree.
+        cls.provider_type = type_name  # type: ignore[attr-defined]
         return cls
 
     return decorator

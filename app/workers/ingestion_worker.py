@@ -79,9 +79,7 @@ class IngestionWorker:
         self.consumer = consumer or worker_identity()
         # Injected so a test -- or a process wanting its own engine -- is not
         # forced through the module-global one.
-        self._uow_factory = uow_factory or (
-            lambda tenant: UnitOfWork(tenant, self.settings)
-        )
+        self._uow_factory = uow_factory or (lambda tenant: UnitOfWork(tenant, self.settings))
         self.pipeline = IngestionPipeline(settings=settings, providers=providers)
         self.stats = WorkerStats(started_at=time.monotonic())
         self._stopping = asyncio.Event()
