@@ -1,0 +1,167 @@
+# Provider manifest
+#
+# The set of LLM and embedding providers this deployment can use. This file is
+# DATA: adding a vendor is an entry here plus (only for a genuinely new wire
+# format) one module under app/providers/llm/. Nothing in the agent, the router
+# or the RAG layer changes.
+#
+# Secrets are never written here. `${VAR}` is interpolated from the environment
+# at load time, and `${VAR:-default}` supplies a fallback. A provider whose
+# credentials resolve to nothing is skipped at startup with a warning -- the
+# system runs happily with one provider or with five.
+#
+# On platforms without a writable filesystem, set PROVIDERS_JSON to the JSON
+# equivalent of this document instead; it takes precedence.
+#
+# `tier`, `context_window`, `supports_tools`, `supports_json_schema` and the
+# cost fields are what the ModelRouter reasons about. It never looks at provider
+# names, so anything declared here becomes routable automatically.
+
+llm:
+  # --- Self-hosted / local ------------------------------------------------
+  # Ollama normally runs on a separate machine (a GPU box, another server).
+  # The backend only ever knows this URL: no hardware detection, no model
+  # auto-selection. Which model to serve is decided on that machine.
+  - name: local
+    type: ollama
+    base_url: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    api_key: ${OLLAMA_API_KEY}          # only if fronted by an auth proxy
+    privacy: local
+    timeout_s: 180
+    max_concurrency: 2                  # Ollama serializes model execution
+    default_model: ${OLLAMA_MODEL:-qwen2.5:7b-instruct}
+    models:
+      - name: ${OLLAMA_MODEL:-qwen2.5:7b-instruct}
+        tier: balanced
+        context_window: 32768
+        max_output_tokens: 4096
+        supports_tools: true
+        supports_json_schema: true      # Ollama >= 0.5 accepts a schema in `format`
+        aliases: [local-default]
+      - name: ${OLLAMA_FAST_MODEL:-qwen2.5:3b-instruct}
+        tier: fast
+        context_window: 32768
+        max_output_tokens: 2048
+        supports_tools: true
+        supports_json_schema: true
+
+  # A remote vLLM / llama.cpp / LM Studio server. Same OpenAI-compatible
+  # dialect as the hosted gateways below -- only the base URL differs.
+  - name: selfhosted
+    type: openai_compatible
+    base_url: ${VLLM_BASE_URL}
+    api_key: ${VLLM_API_KEY}
+    privacy: local
+    enabled: ${VLLM_ENABLED:-false}
+    models:
+      - name: ${VLLM_MODEL:-meta-llama/Llama-3.1-8B-Instruct}
+        tier: balanced
+        context_window: 131072
+        supports_tools: true
+
+  # --- Hosted vendors -----------------------------------------------------
+  # Each of these is skipped automatically when its API key is absent.
+  - name: claude
+    type: anthropic
+    api_key: ${ANTHROPIC_API_KEY}
+    privacy: cloud
+    default_model: claude-sonnet-5
+    models:
+      - name: claude-opus-5
+        tier: quality
+        context_window: 1000000
+        max_output_tokens: 32000
+        supports_tools: true
+        supports_json_schema: true
+        cost_per_1m_input: 5.00
+        cost_per_1m_output: 25.00
+      - name: claude-sonnet-5
+        tier: balanced
+        context_window: 1000000
+        max_output_tokens: 32000
+        supports_tools: true
+        supports_json_schema: true
+        cost_per_1m_input: 2.00
+        cost_per_1m_output: 10.00
+      - name: claude-haiku-4-5
+        tier: fast
+        context_window: 200000
+        max_output_tokens: 8192
+        supports_tools: true
+        supports_json_schema: true
+        cost_per_1m_input: 1.00
+        cost_per_1m_output: 5.00
+
+  # Cost fields below are left at 0 deliberately: publishing a guessed rate is
+  # worse than publishing none, because the router would optimize against it.
+  # Fill them in from the vendor's current pricing page before enabling
+  # cost-aware routing for these providers.
+  - name: openai
+    type: openai
+    api_key: ${OPENAI_API_KEY}
+    privacy: cloud
+    default_model: ${OPENAI_MODEL:-gpt-4o-mini}
+    models:
+      - name: gpt-4o
+        tier: quality
+        context_window: 128000
+        max_output_tokens: 16384
+        supports_tools: true
+        supports_json_schema: true
+      - name: gpt-4o-mini
+        tier: fast
+        context_window: 128000
+        max_output_tokens: 16384
+        supports_tools: true
+        supports_json_schema: true
+
+  - name: gemini
+    type: gemini
+    api_key: ${GEMINI_API_KEY}
+    privacy: cloud
+    default_model: ${GEMINI_MODEL:-gemini-2.0-flash}
+    models:
+      - name: gemini-2.0-flash
+        tier: fast
+        context_window: 1000000
+        max_output_tokens: 8192
+        supports_tools: true
+        supports_json_schema: true
+
+  # Any OpenAI-compatible gateway. Groq shown; Together, Fireworks, OpenRouter,
+  # DeepSeek and Mistral are the same entry with a different base_url and key.
+  - name: groq
+    type: openai_compatible
+    base_url: https://api.groq.com/openai/v1
+    api_key: ${GROQ_API_KEY}
+    privacy: cloud
+    enabled: ${GROQ_ENABLED:-false}
+    models:
+      - name: ${GROQ_MODEL:-llama-3.3-70b-versatile}
+        tier: fast
+        context_window: 131072
+        supports_tools: true
+
+embeddings:
+  # The vector column's dimension is fixed at migration time from EMBEDDING_DIM
+  # and must equal `dimension` here. A boot guard compares both against what the
+  # provider actually returns and refuses to start if they disagree -- see
+  # docs/providers.md for the re-embedding procedure.
+  - name: default
+    type: ollama
+    # Set OLLAMA_EMBEDDING_BASE_URL only when embeddings live on a different
+    # host from chat; otherwise point both at the same server.
+    base_url: ${OLLAMA_EMBEDDING_BASE_URL:-http://host.docker.internal:11434}
+    api_key: ${OLLAMA_API_KEY}
+    model: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+    dimension: ${EMBEDDING_DIM:-768}
+    batch_size: 32
+    max_concurrency: 2
+    timeout_s: 120
+
+  - name: openai
+    type: openai
+    api_key: ${OPENAI_API_KEY}
+    model: text-embedding-3-small
+    dimension: 1536
+    enabled: ${OPENAI_EMBEDDINGS_ENABLED:-false}
