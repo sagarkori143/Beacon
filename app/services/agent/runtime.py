@@ -228,34 +228,44 @@ class AgentRuntime:
         result.plan = plan
         yield ev.plan_event(plan.to_trace())
 
-        # A genuinely ambiguous request is worth one question. Guessing wastes
-        # a full retrieval and generation cycle and usually still misses.
-        if plan.intent is Intent.NEEDS_CLARIFICATION and plan.clarifying_question:
-            result.answer = plan.clarifying_question
-            result.finish_reason = "clarification"
-            yield ev.token_event(plan.clarifying_question)
-            yield ev.done_event(
-                message_id=None,
-                conversation_id=str(request.conversation_id) if request.conversation_id else None,
-                trace_id=trace.trace_id,
-                finish_reason="clarification",
-                grounding=0.0,
-            )
-            return
+        # A genuinely ambiguous request is worth one question -- but asking is a
+        # last resort, not a first one.
+        #
+        # The intent label is one judgement call by whichever model is planning,
+        # and a small one gets it wrong in a specific, damaging direction: it
+        # marks plainly-answerable questions ambiguous while still producing
+        # perfectly good search queries for them. Trusting the label there means
+        # interrogating a guest who asked what time breakfast is, about a fact
+        # sitting in the handbook.
+        #
+        # So the question is held back, retrieval runs anyway -- the planner's
+        # own instruction is that an unnecessary search is cheap and a wrong
+        # answer is not -- and it is only asked if nothing useful came back.
+        pending_clarification = (
+            plan.clarifying_question
+            if plan.intent is Intent.NEEDS_CLARIFICATION and plan.clarifying_question
+            else None
+        )
 
         # 2. Retrieve --------------------------------------------------------
         context = BuiltContext(budget=self.settings.context.max_context_tokens)
         wants_retrieval = (
             plan.needs_retrieval if request.force_retrieval is None else request.force_retrieval
         )
+        queries = list(plan.search_queries)
 
-        if wants_retrieval and plan.search_queries:
+        if pending_clarification and not queries:
+            # It could not say what to look for, so look for what was asked.
+            wants_retrieval = True
+            queries = [query.strip()[:500]]
+
+        if wants_retrieval and queries:
             yield ev.stage("retrieving")
             with trace.span("rag.retrieve"):
                 outcome = await self.retriever.retrieve(
                     request.uow,
                     principal.tenant,
-                    queries=plan.search_queries,
+                    queries=queries,
                     trace=trace,
                 )
             yield ev.search_event(
@@ -277,6 +287,21 @@ class AgentRuntime:
 
         result.context = context
         result.citations = [c.to_dict() for c in context.citations]
+
+        # Nothing was found, and the planner did flag the request as ambiguous.
+        # Now the question is worth asking.
+        if pending_clarification and not context.passages:
+            result.answer = pending_clarification
+            result.finish_reason = "clarification"
+            yield ev.token_event(pending_clarification)
+            yield ev.done_event(
+                message_id=None,
+                conversation_id=str(request.conversation_id) if request.conversation_id else None,
+                trace_id=trace.trace_id,
+                finish_reason="clarification",
+                grounding=0.0,
+            )
+            return
 
         # 3. Tool loop -------------------------------------------------------
         messages: list[Message] = [
@@ -369,6 +394,39 @@ class AgentRuntime:
 
         # 5. Finalize --------------------------------------------------------
         answer = "".join(answer_parts).strip()
+
+        # An empty answer is a failure wearing a success's clothes: finish_reason
+        # says "stop", nothing raised, and the user gets a blank bubble with no
+        # hint that anything went wrong. It happens when a model has just been
+        # through a tool turn and reads the exchange as already concluded --
+        # small models especially.
+        #
+        # Retry once from the retrieved passages alone, without the tool
+        # transcript. Cheap, and it is the transcript that confused it.
+        if not answer and not context.is_empty:
+            log.info("empty_answer_retry", trace_id=trace.trace_id, model=route.model)
+            retry = await provider.generate(
+                model=route.model,
+                messages=self._answer_messages(request, query, context, []),
+                params=route.params,
+                trace=trace,
+            )
+            answer = retry.text.strip()
+            if answer:
+                usage, finish = retry.usage, retry.finish_reason
+                yield ev.token_event(answer)
+
+        if not answer:
+            # Still nothing. Say that plainly -- silence is the one response the
+            # user cannot act on, and it looks like the product is broken.
+            answer = (
+                "I was not able to put an answer together for that. "
+                "Please try asking it a different way."
+            )
+            finish = "empty"
+            log.warning("empty_answer", trace_id=trace.trace_id, model=route.model)
+            yield ev.token_event(answer)
+
         result.answer = answer
         result.usage = usage
         result.finish_reason = finish

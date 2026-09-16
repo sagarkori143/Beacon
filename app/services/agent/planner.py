@@ -18,7 +18,7 @@ from collections.abc import Sequence
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.core.enums import TaskKind
 from app.core.logging import get_logger
@@ -61,6 +61,24 @@ class Plan(BaseModel):
     @classmethod
     def _clean_queries(cls, value: list[str]) -> list[str]:
         return [q.strip() for q in value if q and q.strip()][:3]
+
+    @model_validator(mode="after")
+    def _reconcile_retrieval(self) -> Plan:
+        """Naming what to search for means a search is needed.
+
+        Models return plans that contradict themselves -- three specific search
+        phrasings alongside ``needs_retrieval: false`` -- and small ones do it
+        often. Of the two fields, the queries are the stronger signal: they are
+        concrete work the model chose to specify, while the boolean is a
+        judgement call it can flip for no visible reason.
+
+        Reconciling here rather than at each call site means every consumer sees
+        a coherent plan, and follows the same rule the planner is given: an
+        unnecessary search is cheap, a confidently wrong answer is not.
+        """
+        if self.search_queries and not self.needs_retrieval:
+            object.__setattr__(self, "needs_retrieval", True)
+        return self
 
     @property
     def needs_tools(self) -> bool:
