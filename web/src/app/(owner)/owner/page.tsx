@@ -1,9 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 import TopBar from "@/components/TopBar";
 import { ApiError, api, type Organization } from "@/lib/api/client";
+import { initials, tint } from "@/lib/ui";
 
 type Provisioned = {
   organization: Organization;
@@ -60,11 +62,13 @@ export default function OwnerConsole() {
       <TopBar console_="owner" />
 
       <section className="card">
-        <h2>New organization</h2>
-        <p className="hint">
+        <div className="card-head">
+          <h2>New organization</h2>
+          <p className="hint">
           Its first administrator is created in the same step, because an organization with
-          nobody to manage it cannot do anything.
-        </p>
+            nobody to manage it cannot do anything.
+          </p>
+        </div>
 
         {error && <div className="notice error">{error}</div>}
 
@@ -77,7 +81,7 @@ export default function OwnerConsole() {
                 Give <strong>{created.admin_email}</strong> this password — it is stored only
                 as a hash and will never be shown again.
                 <br />
-                <code>{created.admin_password}</code>
+                <span className="secret-value">{created.admin_password}</span>
               </>
             ) : (
               " No administrator was created for it yet."
@@ -109,13 +113,14 @@ export default function OwnerConsole() {
             </div>
           </div>
           <button className="primary" disabled={busy}>
-            {busy ? "Creating…" : "Create organization"}
+            {busy && <span className="spinner" />}
+            {busy ? "Creating" : "Create organization"}
           </button>
         </form>
       </section>
 
       <section className="card">
-        <div className="spread" style={{ marginBottom: 14 }}>
+        <div className="spread card-head">
           <div>
             <h2>Organizations</h2>
             <p className="hint" style={{ margin: 0 }}>
@@ -129,37 +134,44 @@ export default function OwnerConsole() {
         </div>
 
         {organizations === null ? (
-          <p className="empty">Loading…</p>
+          <div className="grid">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="skeleton" style={{ height: 118, borderRadius: 18 }} />
+            ))}
+          </div>
         ) : organizations.length === 0 ? (
-          <p className="empty">No organizations yet.</p>
+          <div className="empty">
+            <div className="mark">·</div>
+            No organizations yet. Create the first one above.
+          </div>
         ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Slug</th>
-                  <th>Status</th>
-                  <th>Created</th>
-                </tr>
-              </thead>
-              <tbody>
-                {organizations.map((o) => (
-                  <tr key={o.id}>
-                    <td>{o.name}</td>
-                    <td className="muted">{o.slug}</td>
-                    <td>
-                      <span className={`pill ${o.is_active ? "on" : "off"}`}>
-                        {o.is_active ? "active" : "inactive"}
-                      </span>
-                    </td>
-                    <td className="muted">
-                      {new Date(o.created_at).toLocaleDateString()}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="grid">
+            {organizations.map((o, index) => {
+              const colour = tint(o.slug);
+              return (
+                <Link
+                  key={o.id}
+                  href={`/owner/organizations/${o.id}`}
+                  className="org-card"
+                  style={{ animationDelay: `${Math.min(index, 8) * 35}ms` }}
+                >
+                  <div className="spread" style={{ gap: 10 }}>
+                    <span
+                      className="avatar"
+                      style={{ background: colour.bg, color: colour.fg }}
+                    >
+                      {initials(o.name)}
+                    </span>
+                    {!o.is_active && <span className="pill danger">inactive</span>}
+                  </div>
+                  <span className="name">{o.name}</span>
+                  <span className="muted mono" style={{ fontSize: 12 }}>
+                    {o.slug}
+                  </span>
+                  <span className="go">Manage →</span>
+                </Link>
+              );
+            })}
           </div>
         )}
       </section>

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
@@ -41,13 +42,19 @@ export default function LoginForm({ console_, title, hint, otherHref, otherLabel
 
   return (
     <main className="center">
-      <form className="card" onSubmit={submit}>
-        <div className="brand" style={{ marginBottom: 4 }}>
-          <h1>Beacon</h1>
-          <span className="badge">{console_ === "owner" ? "platform" : "organization"}</span>
+      <form className="card rise" style={{ width: "100%", maxWidth: 390 }} onSubmit={submit}>
+        <div className="brand" style={{ marginBottom: 22 }}>
+          <span className="mark">B</span>
+          Beacon
+          <span className="pill" style={{ marginLeft: 2 }}>
+            {console_ === "owner" ? "platform" : "organization"}
+          </span>
         </div>
-        <h2 style={{ marginTop: 12 }}>{title}</h2>
-        <p className="hint">{hint}</p>
+
+        <h2 style={{ fontSize: 19 }}>{title}</h2>
+        <p className="hint" style={{ marginBottom: 20 }}>
+          {hint}
+        </p>
 
         {error && <div className="notice error">{error}</div>}
 
@@ -58,6 +65,7 @@ export default function LoginForm({ console_, title, hint, otherHref, otherLabel
             type="email"
             autoComplete="username"
             required
+            autoFocus
             value={email}
             onChange={(e) => setEmail(e.target.value)}
           />
@@ -74,12 +82,15 @@ export default function LoginForm({ console_, title, hint, otherHref, otherLabel
           />
         </div>
 
-        <button className="primary" type="submit" disabled={busy} style={{ width: "100%" }}>
-          {busy ? "Signing in…" : "Sign in"}
+        <button className="primary block" type="submit" disabled={busy}>
+          {busy && <span className="spinner" />}
+          {busy ? "Signing in" : "Sign in"}
         </button>
 
-        <p className="hint" style={{ margin: "16px 0 0", textAlign: "center" }}>
-          <a href={otherHref}>{otherLabel}</a>
+        <p className="hint" style={{ textAlign: "center", marginTop: 18 }}>
+          <Link href={otherHref}>{otherLabel}</Link>
+          <span className="muted"> · </span>
+          <Link href="/">Public site</Link>
         </p>
       </form>
     </main>

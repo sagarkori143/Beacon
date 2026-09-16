@@ -110,7 +110,7 @@ web:  ## Run the web console (needs the API up: make up)
 
 .PHONY: web-check
 web-check:  ## Typecheck the web console
-	cd web && npx tsc --noEmit
+	cd web && npm run check
 
 # --- running -----------------------------------------------------------------
 

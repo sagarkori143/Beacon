@@ -98,11 +98,28 @@ export async function proxy(
     }
   }
 
-  const payload = await upstream.arrayBuffer();
-  const response = new NextResponse(payload, { status: upstream.status });
-  const contentType = upstream.headers.get("content-type");
-  if (contentType) response.headers.set("content-type", contentType);
+  const contentType = upstream.headers.get("content-type") ?? "";
+
+  // Server-sent events and file downloads must flow through, not be collected.
+  // Buffering an SSE response means the browser sees nothing until the stream
+  // *ends* -- which, for a live ingestion timeline or a streaming answer, is
+  // precisely the moment the information stops being useful.
+  const streaming =
+    contentType.includes("text/event-stream") || upstream.headers.has("content-disposition");
+
+  const headers = new Headers();
+  if (contentType) headers.set("content-type", contentType);
   const disposition = upstream.headers.get("content-disposition");
-  if (disposition) response.headers.set("content-disposition", disposition);
-  return response;
+  if (disposition) headers.set("content-disposition", disposition);
+
+  if (streaming && upstream.body) {
+    headers.set("cache-control", "no-cache, no-transform");
+    headers.set("x-accel-buffering", "no");
+    return new NextResponse(upstream.body, { status: upstream.status, headers });
+  }
+
+  return new NextResponse(await upstream.arrayBuffer(), {
+    status: upstream.status,
+    headers,
+  });
 }

@@ -67,27 +67,31 @@ the group document, with no trace of Ginza.
 processing, search, versioning. `GET /health` stays green; `GET /health/ready`
 tells you what is degraded.
 
-### The consoles
+### The website
 
 ```bash
 make web-install     # once
 make web             # http://localhost:3000
 ```
 
-Two of them, because there are two credential types:
+Three surfaces, and only two of them need a password:
 
 | | | |
 |---|---|---|
+| `/` | **anyone** | every published company; open one and ask it questions |
+| `/admin` | organization administrator | upload knowledge and watch it process, manage branches and people |
 | `/owner` | platform operator | create organizations and their first administrator |
-| `/admin` | organization administrator | manage that organization's people |
 
-Tokens are held in httpOnly cookies set by Next route handlers that proxy the
-API server-side, so no credential is ever readable by page JavaScript and the
-browser only ever talks to `localhost:3000`.
+**Customers do not sign in.** The landing page lists every organization, and a
+visitor picks one and asks. Answers cite the document and page they came from.
+Each request reaches exactly one organization, so asking Sagar Hotels about
+breakfast cannot surface anything Aurora Clinics uploaded.
 
-The API is also usable directly at `http://localhost:8000/docs` (Swagger UI:
-**Authorize**, paste an `access_token`), which is still the way to exercise
-search and chat until the end-user console exists.
+Tokens for the two consoles live in httpOnly cookies set by Next route handlers
+that call the API server-side, so no credential is readable by page JavaScript
+and the browser only ever talks to `localhost:3000`.
+
+The API is also usable directly at `http://localhost:8000/docs`.
 
 ### Your own account, and creating real tenants
 

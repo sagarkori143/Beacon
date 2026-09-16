@@ -1,40 +1,51 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 import TopBar from "@/components/TopBar";
-import { ApiError, api, type Page, type TenantUser } from "@/lib/api/client";
+import { ApiError, api, type Page } from "@/lib/api/client";
+import { STAGE_LABEL, formatWhen } from "@/lib/ui";
 
 type Me = {
-  user: TenantUser;
+  user: { email: string; full_name: string | null };
   organization: { id: string; name: string; slug: string };
-  location: { id: string; name: string } | null;
 };
 
-type ResetResult = { user: TenantUser; password: string | null };
+type Job = {
+  id: string;
+  document_id: string;
+  status: string;
+  current_stage: string;
+  progress: number;
+  error_message: string | null;
+  created_at: string;
+};
 
-export default function AdminConsole() {
+export default function Overview() {
   const [me, setMe] = useState<Me | null>(null);
-  const [page, setPage] = useState<Page<TenantUser> | null>(null);
+  const [counts, setCounts] = useState({ documents: 0, branches: 0, people: 0 });
+  const [jobs, setJobs] = useState<Job[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
-  const [secret, setSecret] = useState<ResetResult | null>(null);
-  const [pending, setPending] = useState<string | null>(null);
-
-  const [email, setEmail] = useState("");
-  const [fullName, setFullName] = useState("");
-  const [password, setPassword] = useState("");
-  const [role, setRole] = useState<"USER" | "ADMIN">("USER");
-  const [busy, setBusy] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [profile, users] = await Promise.all([
+      const [profile, docs, branches, people, recent] = await Promise.all([
         api<Me>("admin", "auth/me"),
-        api<Page<TenantUser>>("admin", "users?limit=200"),
+        api<Page<unknown>>("admin", "documents?limit=1"),
+        api<Page<unknown>>("admin", "locations"),
+        api<Page<unknown>>("admin", "users?limit=1"),
+        api<Page<Job>>("admin", "ingestion/jobs?limit=6"),
       ]);
       setMe(profile);
-      setPage(users);
+      setCounts({
+        documents: docs.total ?? 0,
+        branches: branches.total ?? 0,
+        people: people.total ?? 0,
+      });
+      setJobs(recent.items);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Could not load this organization.");
     }
@@ -42,241 +53,118 @@ export default function AdminConsole() {
 
   useEffect(() => {
     void load();
+    // Jobs move on their own; a light refresh keeps the overview honest without
+    // the machinery a live stream would need on a page that only summarises.
+    const timer = setInterval(() => void load(), 8000);
+    return () => clearInterval(timer);
   }, [load]);
 
-  /** Run one mutation, surfacing the backend's own message when it refuses. */
-  async function run(id: string, action: () => Promise<void>) {
-    setPending(id);
+  async function retry(job: Job) {
+    setBusyId(job.id);
     setError(null);
-    setNote(null);
     try {
-      await action();
+      await api("admin", `ingestion/jobs/${job.id}/retry`, { method: "POST" });
+      setNote("Queued again. It will pick up where it failed.");
       await load();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "That did not work.");
+      setError(e instanceof ApiError ? e.message : "Could not retry it.");
     } finally {
-      setPending(null);
+      setBusyId(null);
     }
   }
 
-  async function createUser(event: React.FormEvent) {
-    event.preventDefault();
-    setBusy(true);
-    setError(null);
-    setNote(null);
-    try {
-      await api<TenantUser>("admin", "auth/users", {
-        method: "POST",
-        body: JSON.stringify({
-          email,
-          password,
-          role,
-          full_name: fullName.trim() || null,
-        }),
-      });
-      setNote(`${email} added.`);
-      setEmail("");
-      setFullName("");
-      setPassword("");
-      setRole("USER");
-      await load();
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Could not create the user.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const users = page?.items ?? [];
+  const tiles = [
+    { label: "Documents", value: counts.documents, href: "/admin/knowledge" },
+    { label: "Branches", value: counts.branches, href: "/admin/branches" },
+    { label: "People", value: counts.people, href: "/admin/people" },
+  ];
 
   return (
     <div className="shell">
       <TopBar console_="admin" subtitle={me?.organization.name} />
 
       {error && <div className="notice error">{error}</div>}
-      {note && <div className="notice">{note}</div>}
-      {secret?.password && (
-        <div className="notice secret">
-          New password for <strong>{secret.user.email}</strong> — shown once, stored only as a
-          hash.
-          <br />
-          <code>{secret.password}</code>
-        </div>
-      )}
+      {note && <div className="notice ok">{note}</div>}
 
-      <section className="card">
-        <h2>Add someone</h2>
-        <p className="hint">
-          An <strong>administrator</strong> manages this organization. A <strong>user</strong>{" "}
-          can search and chat over its knowledge, nothing else.
+      <section style={{ marginBottom: 20 }}>
+        <span className="eyebrow">Signed in as {me?.user.email ?? "…"}</span>
+        <h1 style={{ marginTop: 8 }}>{me?.organization.name ?? "Loading"}</h1>
+        <p className="lede">
+          Your knowledge answers questions on the public site at{" "}
+          {me ? (
+            <Link href={`/c/${me.organization.slug}`}>/c/{me.organization.slug}</Link>
+          ) : (
+            "…"
+          )}
+          .
         </p>
-
-        <form onSubmit={createUser}>
-          <div className="row">
-            <div className="field">
-              <label htmlFor="u-email">Email</label>
-              <input
-                id="u-email"
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="u-name">Name</label>
-              <input
-                id="u-name"
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-              />
-            </div>
-          </div>
-          <div className="row">
-            <div className="field">
-              <label htmlFor="u-password">Password (at least 12 characters)</label>
-              <input
-                id="u-password"
-                type="text"
-                required
-                minLength={12}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="u-role">Role</label>
-              <select
-                id="u-role"
-                value={role}
-                onChange={(e) => setRole(e.target.value as "USER" | "ADMIN")}
-              >
-                <option value="USER">User</option>
-                <option value="ADMIN">Administrator</option>
-              </select>
-            </div>
-          </div>
-          <button className="primary" disabled={busy}>
-            {busy ? "Adding…" : "Add person"}
-          </button>
-        </form>
       </section>
 
+      <div className="grid" style={{ marginBottom: 18 }}>
+        {tiles.map((tile) => (
+          <Link key={tile.label} href={tile.href} className="org-card">
+            <span className="eyebrow">{tile.label}</span>
+            <span style={{ fontSize: 30, fontWeight: 660, letterSpacing: "-0.03em" }}>
+              {tile.value}
+            </span>
+            <span className="go">Manage →</span>
+          </Link>
+        ))}
+      </div>
+
       <section className="card">
-        <div className="spread" style={{ marginBottom: 14 }}>
-          <div>
-            <h2>People</h2>
-            <p className="hint" style={{ margin: 0 }}>
-              {page?.total ?? 0} in {me?.organization.name ?? "this organization"}
-            </p>
-          </div>
-          <button className="small" onClick={() => void load()}>
-            Refresh
-          </button>
+        <div className="card-head">
+          <h2>Recent processing</h2>
+          <p className="hint">Every upload runs through the pipeline before it can answer.</p>
         </div>
 
-        {page === null ? (
-          <p className="empty">Loading…</p>
-        ) : users.length === 0 ? (
-          <p className="empty">Nobody here yet.</p>
+        {jobs.length === 0 ? (
+          <div className="empty">
+            <div className="mark">·</div>
+            Nothing processed yet.{" "}
+            <Link href="/admin/knowledge">Upload a document</Link>.
+          </div>
         ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Person</th>
-                  <th>Role</th>
-                  <th>Status</th>
-                  <th style={{ width: 1 }} />
-                </tr>
-              </thead>
-              <tbody>
-                {users.map((u) => {
-                  const isMe = u.id === me?.user.id;
-                  const working = pending === u.id;
-                  return (
-                    <tr key={u.id}>
-                      <td>
-                        {u.full_name ?? <span className="muted">—</span>}
-                        <div className="muted">{u.email}</div>
-                      </td>
-                      <td>
-                        <span className={`pill ${u.role === "ADMIN" ? "admin" : ""}`}>
-                          {u.role === "ADMIN" ? "admin" : "user"}
-                        </span>
-                        {isMe && <span className="muted"> · you</span>}
-                      </td>
-                      <td>
-                        <span className={`pill ${u.is_active ? "on" : "off"}`}>
-                          {u.is_active ? "active" : "disabled"}
-                        </span>
-                      </td>
-                      <td>
-                        <div className="actions">
-                          <button
-                            className="small"
-                            disabled={working}
-                            onClick={() =>
-                              run(u.id, async () => {
-                                await api("admin", `users/${u.id}`, {
-                                  method: "PATCH",
-                                  body: JSON.stringify({
-                                    role: u.role === "ADMIN" ? "USER" : "ADMIN",
-                                  }),
-                                });
-                                setNote(
-                                  `${u.email} is now ${
-                                    u.role === "ADMIN" ? "a user" : "an administrator"
-                                  }. Their sessions were ended.`,
-                                );
-                              })
-                            }
-                          >
-                            {u.role === "ADMIN" ? "Make user" : "Make admin"}
-                          </button>
+          <div className="stack" style={{ gap: 12 }}>
+            {jobs.map((job) => (
+              <div key={job.id} className="spread">
+                <span className="status-line">
+                  <span
+                    className={`pill ${
+                      job.status === "COMPLETED"
+                        ? "ok"
+                        : job.status === "FAILED"
+                          ? "danger"
+                          : "accent"
+                    }`}
+                  >
+                    <span
+                      className={`dot ${job.status === "RUNNING" ? "live" : ""}`}
+                    />
+                    {STAGE_LABEL[job.current_stage] ?? job.current_stage}
+                  </span>
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    {formatWhen(job.created_at)}
+                  </span>
+                  {job.error_message && (
+                    <span className="muted" style={{ fontSize: 12 }}>
+                      {job.error_message.slice(0, 80)}
+                    </span>
+                  )}
+                </span>
 
-                          <button
-                            className="small"
-                            disabled={working}
-                            onClick={() =>
-                              run(u.id, async () => {
-                                const result = await api<ResetResult>(
-                                  "admin",
-                                  `users/${u.id}/reset-password`,
-                                  { method: "POST", body: JSON.stringify({}) },
-                                );
-                                setSecret(result);
-                              })
-                            }
-                          >
-                            Reset password
-                          </button>
-
-                          <button
-                            className="small danger"
-                            disabled={working}
-                            onClick={() =>
-                              run(u.id, async () => {
-                                await api(
-                                  "admin",
-                                  `users/${u.id}/${u.is_active ? "disable" : "enable"}`,
-                                  { method: "POST" },
-                                );
-                                setNote(
-                                  `${u.email} ${u.is_active ? "disabled" : "enabled"}.`,
-                                );
-                              })
-                            }
-                          >
-                            {u.is_active ? "Disable" : "Enable"}
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                {job.status === "FAILED" && (
+                  <button
+                    className="small"
+                    disabled={busyId === job.id}
+                    onClick={() => void retry(job)}
+                  >
+                    {busyId === job.id && <span className="spinner" />}
+                    Retry
+                  </button>
+                )}
+              </div>
+            ))}
           </div>
         )}
       </section>

@@ -1,6 +1,20 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
+
+const TABS: Record<"owner" | "admin", { href: string; label: string }[]> = {
+  owner: [
+    { href: "/owner", label: "Organizations" },
+    { href: "/owner/operators", label: "Operators" },
+  ],
+  admin: [
+    { href: "/admin", label: "Overview" },
+    { href: "/admin/knowledge", label: "Knowledge" },
+    { href: "/admin/branches", label: "Branches" },
+    { href: "/admin/people", label: "People" },
+  ],
+};
 
 export default function TopBar({
   console_,
@@ -10,6 +24,7 @@ export default function TopBar({
   subtitle?: string | null;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
 
   async function signOut() {
     await fetch(`/api/${console_}/session`, { method: "DELETE" });
@@ -20,13 +35,25 @@ export default function TopBar({
   return (
     <header className="topbar">
       <div className="brand">
-        <h1>Beacon</h1>
-        <span className="badge">{console_ === "owner" ? "platform" : "organization"}</span>
-        {subtitle && <span className="muted">{subtitle}</span>}
+        <span className="mark">B</span>
+        {subtitle ?? "Beacon"}
+        <span className="pill">{console_ === "owner" ? "platform" : "organization"}</span>
       </div>
-      <button className="link" onClick={signOut}>
-        Sign out
-      </button>
+
+      <nav className="nav">
+        {TABS[console_].map((tab) => (
+          <Link
+            key={tab.href}
+            href={tab.href}
+            aria-current={pathname === tab.href ? "page" : undefined}
+          >
+            {tab.label}
+          </Link>
+        ))}
+        <button className="ghost small" onClick={signOut}>
+          Sign out
+        </button>
+      </nav>
     </header>
   );
 }

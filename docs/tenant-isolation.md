@@ -1,8 +1,14 @@
 # Tenant isolation
 
-One rule: **tenant scope comes from the authenticated identity, never from a
-request parameter.** Everything below exists to make that true even when a
-handler is wrong.
+One rule: **no request ever reaches two organizations.** Everything below exists
+to make that true even when a handler is wrong.
+
+For every signed-in caller, that is enforced by a stronger rule: scope comes from
+the authenticated identity and never from a request parameter. The public site is
+the one deliberate exception -- a visitor has no token, so the organization comes
+from the URL -- and it is treated as exactly that: a bounded exception with its
+own section below, its own architecture test, and no change to the rule it sits
+beside. One request, one tenant, still holds there.
 
 There are four independent layers. Any one of them failing should not leak data.
 
@@ -189,6 +195,48 @@ leaves the invariant standing.
 
 ---
 
+## The public site
+
+Visitors do not sign in. The landing page lists organizations and anyone may ask
+one of them a question, so `/public/organizations/{slug}/chat` takes its
+organization from the URL -- the one place in the system where tenant scope does
+not come from a token.
+
+Be exact about what that does and does not change.
+
+**What changes** is authentication. **What does not change** is scoping: the slug
+resolves to one organization, the session opens scoped to that one, and
+`public_principal` carries no location -- which `Retriever._levels` already reads
+as organization-wide knowledge only, with no path into any one branch's private
+material. One request still reaches exactly one tenant.
+
+`public_principal` is deliberately an ordinary `Principal` rather than a new
+type, so every check downstream applies to it unchanged; the only unusual thing
+about it is how it was obtained. An architecture test enforces that only
+`api/v1/public.py` constructs one, because a second call site would mean "scope
+comes from the token" had quietly stopped being true elsewhere.
+
+**What this does expose** is every listed organization's active knowledge to
+anyone who can reach the site. That is the intended product behaviour.
+`organizations.is_public` governs it and defaults to `true`; setting it false
+removes an organization from the listing and makes its slug a 404.
+
+Reading that table without tenant context needed a second policy, and its shape
+matters:
+
+```sql
+CREATE POLICY public_read ON organizations
+    FOR SELECT
+    USING (is_public AND is_active);
+```
+
+`FOR SELECT` only. Permissive policies OR together, so adding `is_public` to the
+existing `FOR ALL` policy would also have let any session UPDATE or DELETE
+another organization's row -- `app_rw` holds both grants. Reads widen; writes do
+not.
+
+---
+
 ## What is tested
 
 [`tests/integration/test_rls.py`](../tests/integration/test_rls.py) enumerates
@@ -208,6 +256,12 @@ the live schema rather than spot-checking it:
 covers the guarantee end-to-end, in both directions: across organizations, and
 across locations within one organization. The second is the easier one to get
 wrong and the one a customer notices first.
+
+[`tests/integration/test_public.py`](../tests/integration/test_public.py) covers
+the public boundary: a visitor reaches only the organization they named, a
+branch's private knowledge never reaches them (proved by mutation -- give the
+visitor a location and it fails), an unlisted organization is absent and its slug
+404s, and the listing returns names and nothing else.
 
 [`tests/integration/test_platform.py`](../tests/integration/test_platform.py)
 covers the operator boundary: that the two token types reject each other, that a
