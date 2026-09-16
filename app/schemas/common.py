@@ -80,3 +80,16 @@ class MeOut(BaseModel):
     organization: OrganizationOut
     location: LocationOut | None = None
     scopes: list[str] = Field(default_factory=list)
+
+
+class LocationUpdate(BaseModel):
+    """A partial edit to a branch.
+
+    `slug` is absent on purpose: it appears in stored object keys, so changing
+    it would orphan every file already written under the old one.
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    timezone: str | None = Field(default=None, max_length=64)
+    settings: dict[str, Any] | None = None
+    is_active: bool | None = None

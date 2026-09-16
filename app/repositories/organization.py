@@ -5,9 +5,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import ConflictError
 from app.core.tenancy import TenantContext
 from app.models.organization import Location, Organization
 from app.repositories.base import assert_tenant, require
@@ -78,5 +79,57 @@ async def create_location(
         settings=settings or {},
     )
     session.add(location)
+    await session.flush()
+    return location
+
+
+UPDATABLE_LOCATION_FIELDS = frozenset({"name", "timezone", "settings", "is_active"})
+
+
+async def count_users_at_location(
+    session: AsyncSession, tenant: TenantContext, location_id: UUID
+) -> int:
+    from app.models.user import User
+
+    result = await session.execute(
+        select(func.count(User.id)).where(
+            User.organization_id == tenant.organization_id,
+            User.location_id == location_id,
+            User.is_active.is_(True),
+        )
+    )
+    return int(result.scalar_one())
+
+
+async def update_location(
+    session: AsyncSession, tenant: TenantContext, location_id: UUID, changes: dict[str, object]
+) -> Location:
+    """Edit a branch.
+
+    ``slug`` is not updatable: it appears in stored object keys, so changing it
+    would orphan every file already written under the old one.
+
+    Deactivating a branch that still has people pinned to it is refused.
+    ``list_locations`` hides inactive branches, so those users would be left
+    assigned to something nobody can see or select -- visible only as knowledge
+    that quietly stops being reachable.
+    """
+    unknown = set(changes) - UPDATABLE_LOCATION_FIELDS
+    if unknown:
+        raise ValueError(f"Not updatable: {sorted(unknown)}")
+
+    location = await get_location(session, tenant, location_id)
+
+    if changes.get("is_active") is False and location.is_active:
+        pinned = await count_users_at_location(session, tenant, location_id)
+        if pinned:
+            raise ConflictError(
+                f"{pinned} active user(s) are assigned to this branch. "
+                f"Move them elsewhere before deactivating it.",
+                details={"pinned_users": pinned},
+            )
+
+    for field_name, value in changes.items():
+        setattr(location, field_name, value)
     await session.flush()
     return location

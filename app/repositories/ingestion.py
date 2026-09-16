@@ -7,10 +7,11 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.enums import IngestionStage, JobStatus
+from app.core.enums import IngestionStage, JobStatus, VersionStatus
+from app.core.errors import ConflictError
 from app.core.tenancy import TenantContext
 from app.models.ingestion import IngestionJob, IngestionJobEvent
 from app.repositories.base import assert_tenant, require
@@ -175,3 +176,54 @@ async def list_events(
         .order_by(IngestionJobEvent.created_at)
     )
     return result.scalars().all()
+
+
+async def count_jobs(
+    session: AsyncSession,
+    tenant: TenantContext,
+    *,
+    status: JobStatus | None = None,
+    document_id: UUID | None = None,
+) -> int:
+    filters = [IngestionJob.organization_id == tenant.organization_id]
+    if status is not None:
+        filters.append(IngestionJob.status == status)
+    if document_id is not None:
+        filters.append(IngestionJob.document_id == document_id)
+    result = await session.execute(select(func.count(IngestionJob.id)).where(*filters))
+    return int(result.scalar_one())
+
+
+async def requeue_job(session: AsyncSession, tenant: TenantContext, job_id: UUID) -> IngestionJob:
+    """Put a failed job back in the queue.
+
+    Also resets the *version* from FAILED back to PROCESSING. Without that the
+    retry runs the whole pipeline again and then dies at the last step, because
+    `activate_version` refuses a version marked failed -- the most expensive
+    possible way to discover a one-line omission.
+
+    Stages are idempotent per `(document_version_id, stage)`, so a retry resumes
+    rather than duplicating chunks: a failure after parsing does not re-parse.
+    """
+    from app.repositories import document as document_repo
+
+    job = await get_job(session, tenant, job_id)
+    if job.status not in {JobStatus.FAILED, JobStatus.CANCELLED}:
+        raise ConflictError(
+            f"Only a failed job can be retried; this one is {job.status.value}.",
+            details={"status": job.status.value},
+        )
+
+    version = await document_repo.get_version(session, tenant, job.document_version_id)
+    if version.status is VersionStatus.FAILED:
+        version.status = VersionStatus.PROCESSING
+        version.error_message = None
+
+    job.status = JobStatus.QUEUED
+    job.current_stage = IngestionStage.UPLOADED
+    job.progress = IngestionStage.UPLOADED.progress
+    job.error_message = None
+    job.error_stage = None
+    job.completed_at = None
+    await session.flush()
+    return job

@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 from app.core.enums import IngestionStage, JobStatus, VersionStatus
 from app.schemas.common import ORMModel
@@ -24,6 +24,11 @@ class DocumentOut(ORMModel):
     language: str
     created_at: datetime
 
+    # A plain @property is invisible to Pydantic v2, so this never reached a
+    # client -- every caller had to re-derive "is this branch-specific?" from
+    # location_id themselves, and the General/Branch badge in the console is
+    # exactly the thing that needs it.
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def scope(self) -> str:
         return "ORGANIZATION" if self.location_id is None else "LOCATION"
@@ -92,3 +97,22 @@ class JobEventOut(ORMModel):
 
 
 DocumentDetail.model_rebuild()
+
+
+class DocumentUpdate(BaseModel):
+    """A partial metadata edit. Absent means "leave alone"."""
+
+    title: str | None = Field(default=None, min_length=1, max_length=300)
+    description: str | None = Field(default=None, max_length=2000)
+    document_type: str | None = Field(default=None, max_length=50)
+    language: str | None = Field(default=None, max_length=10)
+
+    # `location_id` is deliberately absent: scope is stamped on every chunk, so
+    # moving a document between branches is a re-ingest, not an edit.
+
+
+class ArchiveResult(BaseModel):
+    document: DocumentOut
+    #: How many chunks stopped answering questions. Surfaced because "archived"
+    #: should be visibly different from "still quietly in the index".
+    chunks_withdrawn: int = 0

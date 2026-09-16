@@ -12,7 +12,13 @@ from fastapi import APIRouter, status
 
 from app.api.deps import CurrentAdmin, CurrentPrincipal, Uow
 from app.repositories import organization as org_repo
-from app.schemas.common import LocationCreate, LocationOut, OrganizationOut
+from app.schemas.common import (
+    LocationCreate,
+    LocationOut,
+    LocationUpdate,
+    OrganizationOut,
+    Page,
+)
 
 router = APIRouter(tags=["organizations"])
 
@@ -24,18 +30,27 @@ async def my_organization(principal: CurrentPrincipal, uow: Uow) -> Organization
         return OrganizationOut.model_validate(organization)
 
 
-@router.get("/locations", response_model=list[LocationOut])
-async def list_locations(principal: CurrentPrincipal, uow: Uow) -> list[LocationOut]:
-    """Locations in the caller's organization.
+@router.get("/locations", response_model=Page[LocationOut])
+async def list_locations(
+    principal: CurrentPrincipal,
+    uow: Uow,
+    include_inactive: bool = False,
+) -> Page[LocationOut]:
+    """The branches this caller can see.
 
-    A user pinned to one location sees only that one -- the list is a navigation
-    aid, and showing them the rest of the estate is not their business.
+    A user pinned to one branch sees only that one -- not as a filter they could
+    turn off, but because that is the whole of their scope.
     """
+    from app.repositories.organization import list_locations as repo_list
+
     async with uow.begin() as session:
-        locations = await org_repo.list_locations(session, principal.tenant)
-        if principal.location_id is not None:
-            locations = [loc for loc in locations if loc.id == principal.location_id]
-        return [LocationOut.model_validate(loc) for loc in locations]
+        locations = await repo_list(session, principal.tenant, include_inactive=include_inactive)
+
+    if principal.location_id is not None:
+        locations = [loc for loc in locations if loc.id == principal.location_id]
+
+    items = [LocationOut.model_validate(loc) for loc in locations]
+    return Page[LocationOut](items=items, total=len(items), limit=len(items) or 1, offset=0)
 
 
 @router.get("/locations/{location_id}", response_model=LocationOut)
@@ -57,4 +72,37 @@ async def create_location(payload: LocationCreate, admin: CurrentAdmin, uow: Uow
             timezone=payload.timezone,
             settings=payload.settings,
         )
+        return LocationOut.model_validate(location)
+
+
+@router.patch("/locations/{location_id}", response_model=LocationOut)
+async def update_location(
+    location_id: UUID, payload: LocationUpdate, admin: CurrentAdmin, uow: Uow
+) -> LocationOut:
+    """Rename a branch, move its timezone, or take it out of service.
+
+    Deactivating is refused while people are still assigned to it: inactive
+    branches disappear from the branch list, so those users would be pinned to
+    something nobody can see, and their knowledge would quietly stop being
+    reachable.
+    """
+    from app.core.enums import AuditAction
+    from app.repositories import audit as audit_repo
+    from app.repositories.organization import update_location as repo_update
+
+    changes = payload.model_dump(exclude_unset=True)
+
+    async with uow.begin() as session:
+        location = await repo_update(session, admin.tenant, location_id, changes)
+        if changes:
+            await audit_repo.record(
+                session,
+                organization_id=admin.organization_id,
+                action=AuditAction.LOCATION_UPDATE,
+                actor_user_id=admin.user_id,
+                location_id=location.id,
+                resource_type="location",
+                resource_id=location.id,
+                message=f"{', '.join(sorted(changes))} changed",
+            )
         return LocationOut.model_validate(location)

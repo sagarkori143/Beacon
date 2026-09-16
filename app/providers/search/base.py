@@ -73,7 +73,19 @@ class SearchFilters:
 
     @property
     def needs_document_join(self) -> bool:
-        return bool(self.document_types)
+        """Always join `documents`, so archived content cannot answer.
+
+        This used to be ``bool(self.document_types)`` -- joined only when the
+        caller filtered by type. The join carries ``d.is_deleted = FALSE``, so
+        on an ordinary unfiltered query (which is to say nearly all of them) an
+        archived document's chunks kept being returned. Archiving deactivates
+        those chunks too, and that is the primary mechanism, but correctness
+        here should not depend on one call site staying disciplined.
+
+        The cost is a primary-key lookup against a small per-tenant table, on a
+        query already hard-filtered by organization, location and is_active.
+        """
+        return True
 
 
 @dataclass(frozen=True, slots=True)

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -78,14 +78,31 @@ async def list_documents(
 
 
 async def count_documents(
-    session: AsyncSession, tenant: TenantContext, *, location_id: UUID | None = None
+    session: AsyncSession,
+    tenant: TenantContext,
+    *,
+    location_id: UUID | None = None,
+    include_org_scope: bool = True,
+    document_type: str | None = None,
 ) -> int:
+    """Total matching the *same* filters as ``list_documents``.
+
+    The parameters are duplicated deliberately rather than defaulted away: a
+    count that quietly ignores a filter the page applied is how a table ends up
+    saying "42 results" above a list of three.
+    """
     stmt = select(func.count(Document.id)).where(
         Document.organization_id == tenant.organization_id,
         Document.is_deleted.is_(False),
     )
     if location_id is not None:
-        stmt = stmt.where((Document.location_id == location_id) | (Document.location_id.is_(None)))
+        stmt = (
+            stmt.where((Document.location_id == location_id) | (Document.location_id.is_(None)))
+            if include_org_scope
+            else stmt.where(Document.location_id == location_id)
+        )
+    if document_type:
+        stmt = stmt.where(Document.document_type == document_type)
     return int((await session.execute(stmt)).scalar_one())
 
 
@@ -354,3 +371,106 @@ async def mark_version_failed(
     )
     await session.refresh(version)
     return version
+
+
+async def archive_document(
+    session: AsyncSession, tenant: TenantContext, document_id: UUID
+) -> tuple[Document, int]:
+    """Take a document out of service without destroying it.
+
+    Three things have to happen together, and leaving any one out produces a
+    half-state that is worse than not archiving at all:
+
+    1. ``is_deleted`` is set, which removes it from every listing.
+    2. **Every chunk of every version is deactivated.** The hybrid-search SQL
+       only joins ``documents`` when the caller filters by document type, so on
+       an ordinary query the flag alone would hide the document from the library
+       while its content kept answering questions.
+    3. The active version is demoted. Otherwise the partial unique index still
+       counts it as the live one, and restoring later has nothing coherent to do.
+
+    The slug is also released, by suffixing it. ``(organization_id,
+    location_id, slug)`` is unique and is *not* partial on ``is_deleted``, while
+    ``find_document_by_slug`` skips deleted rows -- so archiving "Breakfast
+    Policy" and uploading it again would look like a fresh document to the
+    lookup and like a duplicate to the database.
+
+    Returns the document and how many chunks were withdrawn.
+    """
+    from app.repositories.chunk import set_chunks_active
+
+    document = await get_document(session, tenant, document_id)
+
+    versions = await list_versions(session, tenant, document_id)
+    withdrawn = 0
+    for version in versions:
+        withdrawn += await set_chunks_active(session, version.id, active=False)
+        if version.status is VersionStatus.ACTIVE:
+            version.status = VersionStatus.INACTIVE
+
+    document.is_deleted = True
+    document.deleted_at = datetime.now(UTC)
+    document.slug = f"{document.slug[:180]}:archived:{uuid4().hex[:8]}"
+    await session.flush()
+    return document, withdrawn
+
+
+async def restore_document(
+    session: AsyncSession, tenant: TenantContext, document_id: UUID
+) -> Document:
+    """Bring an archived document back into the library.
+
+    Deliberately leaves every version INACTIVE. Restoring does not decide which
+    version should answer questions -- an admin picks one through the existing
+    activate endpoint, which runs the validation gates. Guessing here would mean
+    storing "which version was live when this was archived" for the sake of a
+    rare operation, and would skip the gates on the way back in.
+    """
+    document = await session.get(Document, document_id)
+    document = require(document, what="Document", identifier=document_id)
+    assert_tenant(document, tenant)
+
+    restored_slug = document.slug.split(":archived:")[0]
+    clash = await session.execute(
+        select(Document.id).where(
+            Document.organization_id == tenant.organization_id,
+            Document.location_id == document.location_id,
+            Document.slug == restored_slug,
+            Document.id != document.id,
+        )
+    )
+    if clash.scalar_one_or_none() is not None:
+        raise ConflictError(
+            f"Another document already uses '{restored_slug}' in this scope. "
+            f"Rename or archive it first."
+        )
+
+    document.slug = restored_slug
+    document.is_deleted = False
+    document.deleted_at = None
+    await session.flush()
+    return document
+
+
+UPDATABLE_DOCUMENT_FIELDS = frozenset({"title", "description", "document_type", "language"})
+
+
+async def update_document(
+    session: AsyncSession, tenant: TenantContext, document_id: UUID, changes: dict[str, object]
+) -> Document:
+    """Edit a document's metadata.
+
+    ``location_id`` is deliberately not updatable. Scope is denormalised onto
+    every chunk row so that filtering never needs a join; moving a document
+    between branches means re-stamping all of them, which is a re-ingest rather
+    than a metadata edit.
+    """
+    unknown = set(changes) - UPDATABLE_DOCUMENT_FIELDS
+    if unknown:
+        raise ValueError(f"Not updatable: {sorted(unknown)}")
+
+    document = await get_document(session, tenant, document_id)
+    for field_name, value in changes.items():
+        setattr(document, field_name, value)
+    await session.flush()
+    return document

@@ -9,24 +9,26 @@ from uuid import UUID
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
 
-from app.api.deps import CurrentAdmin, CurrentPrincipal, Progress, Providers, Uow
+from app.api.deps import CurrentAdmin, CurrentPrincipal, Progress, Providers, Trace, Uow
 from app.api.v1.chat_support import SSE_HEADERS
 from app.core.enums import JobStatus
 from app.repositories import ingestion as job_repo
+from app.schemas.common import Page
 from app.schemas.document import JobEventOut, JobOut
 
 router = APIRouter(prefix="/ingestion", tags=["ingestion"])
 
 
-@router.get("/jobs", response_model=list[JobOut])
+@router.get("/jobs", response_model=Page[JobOut])
 async def list_jobs(
     principal: CurrentPrincipal,
     uow: Uow,
-    status: JobStatus | None = Query(default=None),
-    document_id: UUID | None = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
-) -> list[JobOut]:
+    status: JobStatus | None = None,
+    document_id: UUID | None = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> Page[JobOut]:
+    """Ingestion runs for this organization, newest first."""
     async with uow.begin() as session:
         jobs = await job_repo.list_jobs(
             session,
@@ -36,7 +38,15 @@ async def list_jobs(
             limit=limit,
             offset=offset,
         )
-        return [JobOut.model_validate(job) for job in jobs]
+        total = await job_repo.count_jobs(
+            session, principal.tenant, status=status, document_id=document_id
+        )
+    return Page[JobOut](
+        items=[JobOut.model_validate(job) for job in jobs],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/jobs/{job_id}", response_model=JobOut)
@@ -139,3 +149,34 @@ async def stream_job_progress(
 
 def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
+
+
+@router.post("/jobs/{job_id}/retry", response_model=JobOut)
+async def retry_job(
+    job_id: UUID, admin: CurrentAdmin, uow: Uow, providers: Providers, trace: Trace
+) -> JobOut:
+    """Run a failed job again without re-uploading the file.
+
+    Stages are idempotent per version, so a retry resumes rather than starting
+    over: a run that died at EMBEDDING does not re-parse or re-OCR the document.
+
+    The message is published **after** the transaction commits. Enqueueing
+    inside it risks a worker picking the job up and reading a row that has not
+    landed yet -- the classic dual-write ordering mistake, which shows up as an
+    occasional "job not found" that never reproduces.
+    """
+    from app.providers.queue.base import QueueMessage
+
+    async with uow.begin() as session:
+        job = await job_repo.requeue_job(session, admin.tenant, job_id)
+        message = QueueMessage(
+            job_id=job.id,
+            organization_id=job.organization_id,
+            document_id=job.document_id,
+            document_version_id=job.document_version_id,
+            trace_id=trace.trace_id,
+        )
+        payload = JobOut.model_validate(job)
+
+    await providers.require_queue().enqueue(message)
+    return payload
