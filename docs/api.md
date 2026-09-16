@@ -330,6 +330,11 @@ on rejection.
 
 ### `GET /documents`, `GET /documents/{id}`, `GET /documents/{id}/versions`
 
+`GET /documents` returns a `Page` envelope (`items`, `total`, `limit`,
+`offset`, `has_more`), as do `GET /locations` and `GET /ingestion/jobs`. Each
+document carries a computed `scope` of `ORGANIZATION` or `LOCATION` — the
+difference between "every branch" and "this one".
+
 A user sees their location's documents plus organization-wide ones.
 `GET /documents/{id}` includes every version and which is active.
 
@@ -387,6 +392,107 @@ So "why did this take four minutes?" is one request, not an investigation.
 
 Depth, pending count, oldest idle time, dead-letter length. Operational counters
 only — no document or organization identifiers.
+
+---
+
+### `GET /ingestion/jobs/{job_id}/stream` *(SSE)*
+
+Follow a document through the pipeline as it happens.
+
+```
+event: stage
+data: {"stage":"PARSING","status":"COMPLETED","progress":0.2,"duration_ms":81.4,
+       "detail":{"pages":14,"body_font_size":10.0},"replay":true}
+
+event: stage
+data: {"stage":"OCR","status":"COMPLETED","progress":0.35,
+       "detail":{"mode":"HYBRID","ocr_page_count":3,
+                 "reasons":["scanned_images (3/14 pages)"]}}
+
+event: done
+data: {"job_id":"…","status":"COMPLETED"}
+```
+
+The job's **recorded history is sent first**, from Postgres, and only then does
+the stream follow the live feed — replayed frames carry `"replay": true`. Without
+that catch-up a watcher who opens the page a second after uploading, which is
+everyone, silently misses PARSING and OCR: the two stages they most wanted to
+see.
+
+A job that has already finished gets its history and an immediate `done`, rather
+than an open connection the client can only end by timing out.
+
+The tenant check happens once, before a byte is streamed — a job belonging to
+another organization is simply not found, and no stream opens.
+
+`: keep-alive` comments are sent during quiet stages so proxies do not close the
+connection mid-run.
+
+**How it crosses processes.** The worker is not the API. Each stage transition is
+published to a Redis Stream keyed by job id, in the same step as the durable
+`ingestion_job_events` write. A Stream rather than pub/sub for two reasons: the
+early stages happen before any browser is listening, and pub/sub would drop them;
+and Stream entries have ids, so a reconnecting watcher resumes rather than
+replaying. The feed is capped and expires — the Postgres rows remain the record
+of what happened, and losing a frame costs a view, not a document.
+
+---
+
+### `POST /documents/{id}/archive` *(admin)*
+
+```json
+{
+  "document": { "id": "…", "title": "Breakfast Policy", "scope": "ORGANIZATION" },
+  "chunks_withdrawn": 23
+}
+```
+
+Takes a document out of service, reversibly. It leaves the library **and stops
+answering questions** — every chunk of every version is deactivated in the same
+transaction, which is the half that is easy to miss and impossible to notice
+afterwards without asking the right question.
+
+`chunks_withdrawn` is returned so "archived" is visibly different from "still
+quietly in the index".
+
+The title becomes available again immediately: the slug is released, so
+re-uploading the same document is an ordinary upload rather than a conflict.
+
+`POST /documents/{id}/restore` brings it back, with **every version inactive**.
+Choosing which one should answer is a separate act — activate it, and the
+validation gates run the same as for any other version.
+
+### `PATCH /documents/{id}` *(admin)*
+
+`title`, `description`, `document_type`, `language`. Absent means "leave alone".
+
+`location_id` is deliberately not accepted. Scope is stamped on every chunk so
+that filtering never needs a join; moving a document between branches means
+re-stamping all of them, which is a re-ingest rather than an edit.
+
+### `GET /documents/versions/{version_id}/download`
+
+The original file as uploaded, streamed. Addressed by version id rather than by
+storage key — a key-addressed endpoint would have to parse the tenant back out of
+the path and trust it, while the version row already knows which organization it
+belongs to.
+
+### `POST /ingestion/jobs/{job_id}/retry` *(admin)*
+
+Runs a failed job again without re-uploading. Stages are idempotent per version,
+so a run that died at EMBEDDING does not re-parse or re-OCR — it resumes.
+
+Refused with `409` unless the job is `FAILED` or `CANCELLED`.
+
+### `PATCH /locations/{id}` *(admin)*
+
+`name`, `timezone`, `settings`, `is_active`. `slug` is not accepted: it appears
+in stored object keys, so changing it would orphan every file already written
+under the old one.
+
+Deactivating is refused with `409` while active users are still pinned to the
+branch — inactive branches disappear from the branch list, so those users would
+be assigned to something nobody can see or select.
 
 ---
 
