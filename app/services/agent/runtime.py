@@ -96,6 +96,9 @@ class AgentResult:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     trace: dict[str, Any] = field(default_factory=dict)
     latency_ms: float = 0.0
+    #: The failure that ended the run, if one did. Kept so the non-streaming
+    #: caller can re-raise the original rather than a flattened stand-in.
+    error: Exception | None = None
 
     @property
     def low_confidence(self) -> bool:
@@ -133,7 +136,12 @@ class AgentRuntime:
             if event.type == "token":
                 chunks.append(event.data["text"])
             elif event.type == "error" and not result.answer:
-                raise AppError(event.data["message"])
+                # Re-raise the original. Constructing a fresh AppError here
+                # would flatten a 503 "model server unreachable" or a 429 with
+                # its Retry-After into a generic 500 -- the caller would be told
+                # something broke when in fact something is merely busy or down,
+                # and would have nothing to act on.
+                raise result.error or AppError(event.data["message"])
 
         if not result.answer:
             result.answer = "".join(chunks)
@@ -155,9 +163,11 @@ class AgentRuntime:
             async for event in self._run(request, trace, result, deadline):
                 yield event
         except NoModelAvailable as exc:
+            result.error = exc
             yield ev.error_event(code=exc.code, message=exc.message, retryable=True)
             return
         except (ProviderError, AppError) as exc:
+            result.error = exc
             log.warning("agent_failed", error=str(exc)[:300], trace_id=trace.trace_id)
             yield ev.error_event(
                 code=getattr(exc, "code", "error"),

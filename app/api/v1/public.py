@@ -193,7 +193,7 @@ async def _prepare(
         redis,
         organization_id=organization.id,
         client=_client_address(request),
-        limit_per_minute=settings.agent.public_rate_limit_per_minute,
+        limit_per_minute=settings.security.public_rate_limit_per_minute,
     )
 
     principal = public_principal(organization.id)

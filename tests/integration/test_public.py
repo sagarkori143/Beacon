@@ -146,6 +146,52 @@ class TestListingAndResolution:
         assert set(listed[0].model_dump()) == {"id", "name", "slug"}
 
 
+class TestTheRequestIsActuallyWired:
+    """Exercise `_prepare` itself, not just the pieces it calls.
+
+    The pieces all had tests and all passed while `_prepare` read the rate limit
+    from a settings section that does not have it -- an AttributeError that only
+    showed up as a 500 the first time a real request arrived. Testing the
+    helpers around a join is not testing the join.
+    """
+
+    async def test_preparing_a_public_request_succeeds(
+        self, settings, app_engine, redis_client, published
+    ) -> None:
+        from fastapi import Request
+
+        from app.api.v1.public import _prepare
+        from app.schemas.chat import ChatRequest
+
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/",
+            "headers": [],
+            "client": ("203.0.113.9", 12345),
+            "query_string": b"",
+        }
+
+        agent_request, _memory, conversation_id, principal = await _prepare(
+            published["slug"],
+            ChatRequest(message="What time is breakfast?"),
+            Request(scope),
+            settings,
+            redis_client,
+            stream=False,
+        )
+
+        assert principal.organization_id == published["organization_id"]
+        assert principal.location_id is None
+        assert agent_request.query == "What time is breakfast?"
+        assert agent_request.organization_name
+        assert conversation_id is not None
+
+    async def test_the_rate_limit_setting_exists_where_it_is_read(self, settings) -> None:
+        """Named explicitly, because a typo here is invisible until traffic arrives."""
+        assert isinstance(settings.security.public_rate_limit_per_minute, int)
+
+
 class TestIsolationUnderPublicAccess:
     """The critical test: naming your own organization is not a way into others."""
 
