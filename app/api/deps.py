@@ -18,6 +18,7 @@ from app.core.db import UnitOfWork
 from app.core.errors import AuthenticationError
 from app.core.tenancy import Principal
 from app.core.tracing import TraceContext
+from app.providers.progress.base import ProgressPublisher
 from app.providers.registry import ProviderBundle
 from app.services.agent.router import ModelRouter
 from app.services.agent.runtime import AgentRuntime
@@ -34,6 +35,11 @@ def get_app_settings() -> Settings:
 
 def get_providers(request: Request) -> ProviderBundle:
     return request.app.state.providers
+
+
+def get_progress(request: Request) -> ProgressPublisher:
+    """The live ingestion feed. Read-only here -- only the worker publishes."""
+    return request.app.state.progress
 
 
 def get_redis_client(request: Request) -> Redis:
@@ -117,4 +123,5 @@ CurrentAdmin = Annotated[Principal, Depends(current_admin)]
 Uow = Annotated[UnitOfWork, Depends(get_uow)]
 AppSettings = Annotated[Settings, Depends(get_app_settings)]
 Providers = Annotated[ProviderBundle, Depends(get_providers)]
+Progress = Annotated[ProgressPublisher, Depends(get_progress)]
 Trace = Annotated[TraceContext, Depends(get_trace)]

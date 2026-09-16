@@ -31,6 +31,7 @@ from app.core.db import (
 from app.core.errors import ConfigurationError, EmbeddingSpaceMismatch
 from app.core.logging import configure_logging, get_logger
 from app.core.redis import close_redis, init_redis
+from app.providers.progress.base import build_progress_publisher
 from app.providers.registry import build_providers
 from app.repositories.embedding_space import verify_embedding_space
 from app.services.agent.router import ModelRouter
@@ -75,6 +76,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.auth_service = AuthService(settings)
     app.state.document_service = DocumentService(settings, providers)
     app.state.platform_service = PlatformService(settings)
+    # The API only reads this feed; the worker is what writes to it.
+    app.state.progress = build_progress_publisher(settings, redis=redis)
     app.state.agent = AgentRuntime(
         settings=settings,
         providers=providers,

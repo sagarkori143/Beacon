@@ -34,6 +34,7 @@ from app.core.errors import IngestionError, ValidationGateFailed
 from app.core.logging import get_logger
 from app.core.tenancy import TenantContext
 from app.core.tracing import TraceContext
+from app.providers.progress.base import ProgressEvent, ProgressPublisher
 from app.providers.registry import ProviderBundle
 from app.providers.vector_store.base import ChunkRecord
 from app.repositories import chunk as chunk_repo
@@ -76,9 +77,60 @@ class PipelineState:
 
 
 class IngestionPipeline:
-    def __init__(self, *, settings: Settings, providers: ProviderBundle) -> None:
+    def __init__(
+        self,
+        *,
+        settings: Settings,
+        providers: ProviderBundle,
+        progress: ProgressPublisher | None = None,
+    ) -> None:
         self.settings = settings
         self.providers = providers
+        # Optional on purpose: nothing about ingestion depends on anyone
+        # watching it, and a run with no publisher must behave identically.
+        self.progress = progress
+
+    async def _announce(
+        self,
+        job_id: UUID,
+        stage: IngestionStage,
+        *,
+        status: str,
+        message: str | None = None,
+        duration_ms: float | None = None,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        """Mirror a stage transition to whoever is watching.
+
+        Called right after the durable write, never instead of it. The record of
+        what happened is the `ingestion_job_events` row; this is a copy for a
+        live view, and losing it costs a frame, not a document.
+        """
+        if self.progress is None:
+            return
+        try:
+            await self.progress.publish(
+                ProgressEvent(
+                    job_id=job_id,
+                    stage=stage.value,
+                    status=status,
+                    progress=stage.progress,
+                    message=message,
+                    duration_ms=duration_ms,
+                    detail=detail or {},
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - see below
+            # The interface asks implementations not to raise, and the shipped
+            # one does not. Guarding anyway, because the cost of being wrong is
+            # a document that ingested perfectly being marked failed -- and the
+            # only thing that actually went wrong was that nobody could watch.
+            log.warning(
+                "progress_announce_failed",
+                job_id=str(job_id),
+                stage=stage.value,
+                error=str(exc)[:200],
+            )
 
     async def run(
         self,
@@ -150,6 +202,9 @@ class IngestionPipeline:
                     duration_ms=duration,
                     detail=detail or {},
                 )
+            await self._announce(
+                job_id, stage, status="COMPLETED", duration_ms=duration, detail=detail or {}
+            )
 
         async with uow.begin() as session:
             job = await job_repo.get_job(session, tenant, job_id)
@@ -162,6 +217,13 @@ class IngestionPipeline:
                 message=f"{len(state.chunks)} chunks indexed and activated",
                 detail={"timings_ms": state.stage_timings},
             )
+        await self._announce(
+            job_id,
+            IngestionStage.COMPLETED,
+            status="COMPLETED",
+            message=f"{len(state.chunks)} chunks indexed and activated",
+            detail={"timings_ms": state.stage_timings},
+        )
 
         log.info(
             "ingestion_complete",
@@ -498,6 +560,15 @@ class IngestionPipeline:
             await document_repo.mark_version_failed(
                 session, tenant, state.version_id, f"{stage.value}: {message}"
             )
+
+        await self._announce(
+            job_id,
+            stage,
+            status="FAILED",
+            message=message,
+            duration_ms=duration_ms,
+            detail=detail,
+        )
 
         log.error(
             "ingestion_failed",

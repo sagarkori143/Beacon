@@ -13,6 +13,7 @@ from app.core.config import get_settings
 from app.core.db import dispose_engine, init_engine
 from app.core.logging import configure_logging, get_logger
 from app.core.redis import close_redis, init_redis
+from app.providers.progress.base import build_progress_publisher
 from app.providers.registry import build_providers
 from app.workers.ingestion_worker import IngestionWorker, install_signal_handlers
 
@@ -31,6 +32,9 @@ async def main() -> None:
         settings=settings,
         providers=providers,
         queue=providers.require_queue(),
+        # The worker is the only process that knows a stage has changed, so it
+        # is the only one that can tell anyone watching.
+        progress=build_progress_publisher(settings, redis=redis),
     )
     install_signal_handlers(worker)
 

@@ -33,6 +33,7 @@ from app.core.db import UnitOfWork
 from app.core.logging import bind_contextvars, clear_contextvars, get_logger
 from app.core.tenancy import TenantContext
 from app.core.tracing import TraceContext
+from app.providers.progress.base import ProgressPublisher
 from app.providers.queue.base import DeliveredMessage, QueueProvider
 from app.providers.registry import ProviderBundle
 from app.services.ingestion.pipeline import IngestionPipeline, is_retryable
@@ -72,6 +73,7 @@ class IngestionWorker:
         queue: QueueProvider,
         consumer: str | None = None,
         uow_factory: Callable[[TenantContext], UnitOfWork] | None = None,
+        progress: ProgressPublisher | None = None,
     ) -> None:
         self.settings = settings
         self.providers = providers
@@ -80,7 +82,7 @@ class IngestionWorker:
         # Injected so a test -- or a process wanting its own engine -- is not
         # forced through the module-global one.
         self._uow_factory = uow_factory or (lambda tenant: UnitOfWork(tenant, self.settings))
-        self.pipeline = IngestionPipeline(settings=settings, providers=providers)
+        self.pipeline = IngestionPipeline(settings=settings, providers=providers, progress=progress)
         self.stats = WorkerStats(started_at=time.monotonic())
         self._stopping = asyncio.Event()
 
