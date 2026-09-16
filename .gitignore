@@ -19,3 +19,8 @@ storage/
 .DS_Store
 .idea/
 .vscode/
+
+# web console
+node_modules/
+.next/
+next-env.d.ts

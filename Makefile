@@ -98,6 +98,20 @@ owners:  ## List platform operators
 seed-local:  ## Seed when running the app on the host (make services + make api)
 	DATABASE_URL="postgresql+asyncpg://app:app@localhost:5432/agentdb" $(PY) -m scripts.seed_demo
 
+# --- web console ---------------------------------------------------------------
+
+.PHONY: web-install
+web-install:  ## Install the web console's dependencies
+	cd web && npm install
+
+.PHONY: web
+web:  ## Run the web console (needs the API up: make up)
+	cd web && npm run dev
+
+.PHONY: web-check
+web-check:  ## Typecheck the web console
+	cd web && npx tsc --noEmit
+
 # --- running -----------------------------------------------------------------
 
 .PHONY: api

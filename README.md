@@ -67,11 +67,27 @@ the group document, with no trace of Ginza.
 processing, search, versioning. `GET /health` stays green; `GET /health/ready`
 tells you what is degraded.
 
-### Where do I log in? There is no UI yet
+### The consoles
 
-Nowhere — and that is the point. This is a backend; the credentials above are
-for HTTP calls. Use `http://localhost:8000/docs` (Swagger UI: **Authorize**,
-paste the `access_token`), `curl`, Postman, or the frontend you build against it.
+```bash
+make web-install     # once
+make web             # http://localhost:3000
+```
+
+Two of them, because there are two credential types:
+
+| | | |
+|---|---|---|
+| `/owner` | platform operator | create organizations and their first administrator |
+| `/admin` | organization administrator | manage that organization's people |
+
+Tokens are held in httpOnly cookies set by Next route handlers that proxy the
+API server-side, so no credential is ever readable by page JavaScript and the
+browser only ever talks to `localhost:3000`.
+
+The API is also usable directly at `http://localhost:8000/docs` (Swagger UI:
+**Authorize**, paste an `access_token`), which is still the way to exercise
+search and chat until the end-user console exists.
 
 ### Your own account, and creating real tenants
 
