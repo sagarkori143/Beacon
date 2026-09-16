@@ -229,3 +229,63 @@ class TestMetadata:
                 await document_repo.update_document(
                     session, org_tenant, uuid.uuid4(), {"title": "Hijacked"}
                 )
+
+
+class TestImageUploads:
+    """A photograph of a notice is a document too.
+
+    Tesseract already sat in the worker for scanned PDFs; the only thing missing
+    was letting an image reach it. These pin the parts that are easy to get
+    wrong: what the API accepts, and that the bytes are checked rather than the
+    filename believed.
+    """
+
+    def test_images_are_accepted(self, settings) -> None:
+        allowed = settings.storage.allowed_mime_types
+        assert "image/png" in allowed
+        assert "image/jpeg" in allowed
+
+    def test_an_image_maps_to_its_own_source_type(self) -> None:
+        from app.core.enums import SourceType
+        from app.services.documents.service import _SOURCE_TYPES
+
+        assert _SOURCE_TYPES["image/png"] is SourceType.IMAGE
+        assert _SOURCE_TYPES["image/jpeg"] is SourceType.IMAGE
+
+    def test_a_renamed_file_is_refused(self, settings, providers) -> None:
+        """The declared type is a claim by the client; the bytes are not.
+
+        These go straight to OCR, which hands them to a subprocess, so "it said
+        it was a PNG" is not a good enough reason to pass them along.
+        """
+        from app.core.errors import UnsupportedFileType
+        from app.services.documents.service import DocumentService
+
+        service = DocumentService(settings, providers)
+        with pytest.raises(UnsupportedFileType):
+            service._validate_upload(
+                b"this is plainly not a picture",
+                content_type="image/png",
+                filename="pretend.png",
+            )
+
+    def test_a_real_png_header_passes(self, settings, providers) -> None:
+        from app.services.documents.service import DocumentService
+
+        service = DocumentService(settings, providers)
+        png = bytes.fromhex("89504e470d0a1a0a") + b"\x00" * 64
+        service._validate_upload(png, content_type="image/png", filename="notice.png")
+
+    def test_an_image_parses_to_an_empty_page_for_ocr_to_fill(self) -> None:
+        """No text layer, and one page that is entirely picture.
+
+        That is exactly what the OCR stage reads as "there is nothing here to
+        weigh, read it", which is why images need no separate sufficiency check.
+        """
+        from app.services.ingestion.parsing.pdf import parse_image
+
+        parsed = parse_image(b"irrelevant")
+        assert parsed.page_count == 1
+        assert parsed.page_texts == [""]
+        assert parsed.image_area_ratios == [1.0]
+        assert parsed.lines == []

@@ -295,7 +295,17 @@ class StorageSettings(BaseModel):
     secret_access_key: str | None = None
     max_upload_bytes: int = 50 * 1024 * 1024
     allowed_mime_types: list[str] = Field(
-        default_factory=lambda: ["application/pdf", "text/plain", "text/markdown"]
+        default_factory=lambda: [
+            "application/pdf",
+            "text/plain",
+            "text/markdown",
+            # Photographs of menus, rate cards and notices are how a lot of this
+            # material actually exists. They go straight to OCR.
+            "image/png",
+            "image/jpeg",
+            "image/webp",
+            "image/tiff",
+        ]
     )
 
 

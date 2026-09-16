@@ -242,3 +242,23 @@ def parse_plain_text(data: bytes, *, encoding: str = "utf-8") -> ParsedPDF:
         font_flags=[True],
         page_count=1,
     )
+
+
+def parse_image(data: bytes) -> ParsedPDF:
+    """Adapt an uploaded image to the same shape everything downstream expects.
+
+    An image has no text layer at all, so this deliberately produces an empty
+    one: a single page, no lines, and an image-area ratio of 1.0. The OCR stage
+    reads that as "this page is entirely picture" and fills the text in.
+
+    Doing it this way rather than special-casing images later means cleaning,
+    chunking and embedding never learn that image uploads exist.
+    """
+    return ParsedPDF(
+        page_texts=[""],
+        lines=[],
+        stats=analyze_layout([], 1, 612.0),
+        image_area_ratios=[1.0],
+        font_flags=[False],
+        page_count=1,
+    )

@@ -43,10 +43,21 @@ log = get_logger(__name__)
 #: will happily label anything application/pdf; the first bytes will not.
 _SIGNATURES: dict[str, tuple[bytes, ...]] = {
     "application/pdf": (b"%PDF-",),
+    # An image upload goes straight to OCR, which hands the bytes to a
+    # subprocess. Checking the magic number is what stops a renamed file
+    # reaching it. Written as hex so the signatures survive any editor.
+    "image/png": (bytes.fromhex("89504e470d0a1a0a"),),
+    "image/jpeg": (bytes.fromhex("ffd8ff"),),
+    "image/webp": (b"RIFF",),
+    "image/tiff": (bytes.fromhex("49492a00"), bytes.fromhex("4d4d002a")),
 }
 
 _SOURCE_TYPES: dict[str, SourceType] = {
     "application/pdf": SourceType.PDF,
+    "image/png": SourceType.IMAGE,
+    "image/jpeg": SourceType.IMAGE,
+    "image/webp": SourceType.IMAGE,
+    "image/tiff": SourceType.IMAGE,
     "text/plain": SourceType.TEXT,
     "text/markdown": SourceType.MARKDOWN,
 }

@@ -15,7 +15,9 @@ type Queued = {
   error?: string;
 };
 
-const ACCEPT = ".pdf,.md,.markdown,.txt,.docx,.doc,.html,.htm";
+// Exactly what the API accepts. Offering more in the picker only means
+// someone chooses a file and then reads an error about it.
+const ACCEPT = ".pdf,.md,.markdown,.txt,.png,.jpg,.jpeg,.webp,.tif,.tiff";
 const MAX_BYTES = 50 * 1024 * 1024;
 
 /**
@@ -104,7 +106,9 @@ export default function Uploader({
         }}
       >
         <div className="file">Drop files here, or click to choose</div>
-        <p className="hint">PDF, Word, Markdown, HTML or plain text · up to 50 MB each</p>
+        <p className="hint">
+          PDF, Markdown, plain text, or a photo (PNG, JPEG, WebP, TIFF) · up to 50 MB each
+        </p>
         <input
           ref={picker}
           type="file"
@@ -117,6 +121,12 @@ export default function Uploader({
           }}
         />
       </div>
+
+      <p className="hint" style={{ marginTop: 10 }}>
+        A photograph of a menu, rate card or notice is read with OCR, so the text in the
+        picture becomes searchable like any other document. A sharp, straight photo reads
+        best.
+      </p>
 
       <div className="row" style={{ marginTop: 14, alignItems: "flex-end" }}>
         <div className="field" style={{ marginBottom: 0 }}>

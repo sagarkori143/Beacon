@@ -30,7 +30,7 @@ from uuid import UUID, uuid4
 from app.core.config import Settings
 from app.core.db import UnitOfWork
 from app.core.enums import IngestionStage, SourceType, TextExtractionMode
-from app.core.errors import IngestionError, ValidationGateFailed
+from app.core.errors import DocumentParseError, IngestionError, ValidationGateFailed
 from app.core.logging import get_logger
 from app.core.tenancy import TenantContext
 from app.core.tracing import TraceContext
@@ -44,7 +44,13 @@ from app.repositories import ingestion as job_repo
 from app.services.ingestion.chunking.chunker import DraftChunk, chunk_document
 from app.services.ingestion.chunking.sections import build_section_tree
 from app.services.ingestion.ocr_gate import TextLayerAssessment, assess_text_layer
-from app.services.ingestion.parsing.pdf import ParsedPDF, parse_pdf, parse_plain_text, render_pages
+from app.services.ingestion.parsing.pdf import (
+    ParsedPDF,
+    parse_image,
+    parse_pdf,
+    parse_plain_text,
+    render_pages,
+)
 from app.services.ingestion.validation import run_gates
 
 log = get_logger(__name__)
@@ -243,6 +249,9 @@ class IngestionPipeline:
 
         if state.source_type is SourceType.PDF:
             state.parsed = parse_pdf(state.raw)
+        elif state.source_type is SourceType.IMAGE:
+            # No text layer to extract; the OCR stage supplies all of it.
+            state.parsed = parse_image(state.raw)
         else:
             state.parsed = parse_plain_text(state.raw)
 
@@ -265,8 +274,11 @@ class IngestionPipeline:
         """Decide whether OCR is needed, and run it only on the pages that need it."""
         assert state.parsed is not None
 
+        if state.source_type is SourceType.IMAGE:
+            return await self._ocr_image(uow, state)
+
         if state.source_type is not SourceType.PDF:
-            return {"skipped": "not a PDF"}
+            return {"skipped": "not a PDF or image"}
 
         assessment = assess_text_layer(
             state.page_texts,
@@ -309,6 +321,50 @@ class IngestionPipeline:
         return {
             **assessment.to_event_detail(),
             "engine": result.engine,
+            "ocr_duration_ms": round(result.duration_ms, 1),
+            "mean_confidence": round(result.mean_confidence, 3),
+        }
+
+    async def _ocr_image(self, uow: UnitOfWork, state: PipelineState) -> dict[str, Any]:
+        """Read an uploaded picture.
+
+        There is no sufficiency check here, unlike a PDF: a photograph has no
+        text layer to weigh, so the question "is OCR worth running?" has only
+        one answer. The bytes go to the provider exactly as uploaded, since
+        re-encoding a photo before recognising it only loses detail.
+        """
+        assert state.raw is not None
+
+        result = await self.providers.require_ocr().extract_text(
+            [(1, state.raw)], languages=self.settings.ocr.languages
+        )
+        text = result.pages[0].text if result.pages else ""
+        state.page_texts = [text]
+        state.ocr_used = True
+        state.ocr_pages = result.page_count
+        state.ocr_confidence = result.mean_confidence
+
+        async with uow.begin() as session:
+            version = await document_repo.get_version(session, state.tenant, state.version_id)
+            version.extraction_mode = TextExtractionMode.OCR
+            version.ocr_used = True
+            version.ocr_page_count = result.page_count
+            version.ocr_mean_confidence = result.mean_confidence
+
+        if not text.strip():
+            # Worth failing loudly. An image nobody can read produces a document
+            # with no chunks, which then answers nothing and looks like the
+            # search is broken rather than the upload.
+            raise DocumentParseError(
+                "No readable text was found in this image. "
+                "A sharper or straighter photograph usually fixes it.",
+                details={"engine": result.engine, "confidence": result.mean_confidence},
+            )
+
+        return {
+            "mode": "IMAGE_OCR",
+            "engine": result.engine,
+            "characters": len(text),
             "ocr_duration_ms": round(result.duration_ms, 1),
             "mean_confidence": round(result.mean_confidence, 3),
         }

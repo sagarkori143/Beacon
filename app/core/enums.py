@@ -112,6 +112,7 @@ class SourceType(StrEnum):
     """Where a chunk's text originally came from. Extensible to web/csv/api."""
 
     PDF = "PDF"
+    IMAGE = "IMAGE"
     TEXT = "TEXT"
     MARKDOWN = "MARKDOWN"
     HTML = "HTML"

@@ -1,253 +1,315 @@
-# Enterprise AI Agent & Runtime
+# Beacon
 
-A multi-tenant RAG and agent backend. Organizations store knowledge once at the
-group level; individual locations store only what differs, and override the
-group on the subjects they cover. Every LLM, embedding model, OCR engine,
-storage backend and queue is a swappable provider chosen by configuration.
+Every business already knows the answers to the questions it gets asked all day.
+What time is breakfast. Do you take dogs. How late is the sauna open. The answers
+sit in a handbook, a rate card, a laminated notice at the front desk.
+
+The trouble is that they sit there in a filing cabinet, and the person who can
+read them out is busy.
+
+Beacon takes those documents and lets anyone ask them questions, in plain
+language, and get an answer that cites the page it came from.
 
 ```
-Sagar Hotels                     "What time is breakfast?"
-  ├── Ginza    → 7:00 – 11:00     asked at Ginza    → 11:00  (location override)
-  ├── Chiyoda  → 7:00 – 10:00     asked at Chiyoda  → 10:00  (group default)
-  └── Meguro   → 7:00 – 10:00     one stored document, three correct answers
+        a visitor                          the front desk binder
+            |                                       |
+   "what time is breakfast?"          "Breakfast is served 7:00 to 10:00
+            |                          in the main dining room, daily."
+            +---------> Beacon <-------------------+
+                          |
+              "7:00 AM to 10:00 AM  [Guest Handbook p.1]"
 ```
 
-Chiyoda's answer comes from the *same* group document Ginza overrode. Nothing is
-duplicated per location, and no location can reach another's knowledge.
+## The problem that makes this interesting
 
----
+One hotel group. Three properties. The group publishes a handbook that applies
+everywhere, and then Ginza starts serving breakfast an hour later than everyone
+else.
 
-## Quick start
+Now the same question has two correct answers, and which one is right depends
+entirely on who is asking.
 
-You need Docker, and **Ollama running and reachable before you seed** — seeding
-embeds the demo documents, so it fails without it. Ollama normally runs on a
-separate machine (a GPU box, another server); the backend only ever knows a URL.
+```
+                    Sagar Hotels
+                         |
+      +------------------+------------------+
+      |                  |                  |
+    Ginza             Chiyoda            Meguro
+   breakfast          (nothing            allows
+   until 11:00         special)            pets
+```
+
+The naive fix is to write three handbooks. Then somebody changes the cancellation
+policy and you have three places to change it, and a year later they disagree
+with each other and nobody notices until a guest is told the wrong thing.
+
+Beacon stores the group handbook once. A property adds a document only for what
+is genuinely different about it. When somebody asks about breakfast:
+
+```
+  Ginza guest asks               Chiyoda guest asks
+        |                              |
+  search Ginza + group           search Chiyoda + group
+        |                              |
+  Ginza says 11:00               Chiyoda says nothing about breakfast
+  group says 10:00                     |
+        |                        group says 10:00
+  same subject, so                     |
+  the branch wins                      |
+        v                              v
+     "until 11:00"                "until 10:00"
+```
+
+One stored copy. Two different correct answers. The group policy on everything
+Ginza did not override still applies, untouched.
+
+## Who uses it
+
+There are three kinds of people here, and only two of them have a password.
+
+```
+   visitor              org admin             platform owner
+  (no login)           (runs one org)        (runs the deployment)
+       |                     |                       |
+  browse companies      upload documents      create organizations
+  ask questions         add branches          create their first admin
+                        manage people         publish or hide them
+                        watch processing
+```
+
+A visitor never signs in. They open the site, pick a company, and ask. That is
+the whole experience.
+
+## The bit that had to be got right
+
+If one hotel's documents can ever be seen by another hotel's guest, nothing else
+about the system matters.
+
+So the rule is: **no request ever touches two organizations.**
+
+It is enforced in four independent places, because any one of them can have a bug
+in it.
+
+```
+  1. the token         says which organization you are, and nothing you
+                       send in the request can change that
+
+  2. the query         every SQL statement filters on your organization
+
+  3. the database      Row Level Security refuses rows from anywhere else,
+                       even if layers 1 and 2 are both wrong
+
+  4. the connection    the app connects as a role that cannot bypass that
+                       policy, and refuses to start if it can
+```
+
+Layer 3 is the one that actually saves you. A careless `WHERE` clause is an
+ordinary mistake; PostgreSQL simply will not return the rows.
+
+The public site is the one deliberate exception, and it is worth being exact
+about it. A visitor has no token, so the organization comes from the web address
+instead. What does not change is the scope: that address resolves to exactly one
+organization, and the visitor carries no branch, which means they see what is
+published for everyone and never one property's private material.
+
+## What happens to a document you upload
+
+This is the part worth watching, and the site lets you watch it.
+
+```
+  you drop a file
+        |
+        v
+  +-------------+
+  |   PARSING   |  pull out the text and how it was laid out
+  +-------------+
+        |
+        v
+  +-------------+  is there real text in here, or is it a picture of text?
+  |     OCR     |  a normal PDF: skipped entirely
+  +-------------+  a scan, or a photo: read it with OCR
+        |          a mixed file: OCR only the pages that need it
+        v
+  +-------------+
+  |  CLEANING   |  tidy the text, keep a copy so this never repeats
+  +-------------+
+        |
+        v
+  +-------------+  cut it at its own headings, never mid subject
+  |  CHUNKING   |  "Pet Policy" and "Smoking Policy" stay separate
+  +-------------+
+        |
+        v
+  +-------------+
+  |  EMBEDDING  |  turn each piece into numbers a search can compare
+  +-------------+
+        |
+        v
+  +-------------+  write everything, but marked invisible
+  |  INDEXING   |
+  +-------------+
+        |
+        v
+  +-------------+  did every piece land? does a test search find it?
+  | VALIDATING  |  if not, stop here and keep the old version live
+  +-------------+
+        |
+        v
+  +-------------+  make the new version visible and the old one not,
+  | ACTIVATING  |  in one step that cannot half happen
+  +-------------+
+        |
+        v
+      ready
+```
+
+Two things in there matter more than they look.
+
+**OCR only runs when it is needed.** Running it on a normal PDF wastes minutes
+per document for a worse result than the text already in the file. Deciding
+that is harder than counting characters: a PDF with a broken font table happily
+produces thousands of characters of garbage, and a scanned contract with a
+"CONFIDENTIAL" watermark on every page looks like it has text on every page. The
+gate weighs several signals and writes down why it chose what it chose, so you
+can always see the reason.
+
+**Nothing is visible until it has passed.** Every piece is written switched off,
+and only the last step turns the new version on and the old one off, together.
+Upload version four while version three is answering questions, and version three
+keeps answering until version four has proved it works. If it fails, version
+three never moved.
+
+## Asking a question
+
+```
+  question
+     |
+     v
+  plan      what kind of question is this, and what should we search for
+     |
+     v
+  search    two searches at once: meaning, and exact words
+     |      the branch result and the group result are merged, and where
+     |      they cover the same subject, the branch wins
+     v
+  tools     if the answer is not in any document (today's date, a rate
+     |      conversion) call something that knows
+     v
+  answer    write it from the passages that were found, and cite them
+```
+
+The search runs two ways at once on purpose. Searching by meaning finds the
+paragraph about dogs when you asked about pets. Searching by exact words finds
+the room number or the price you typed. Either alone misses things the other
+catches, so both run and the results are merged.
+
+## Running it
+
+You need Docker. You also need Ollama, which is what actually writes the answers,
+and it does not have to be on this machine.
 
 ```bash
-# 1. On your model server — both models, and leave it running
-ollama pull qwen2.5:7b-instruct      # or whatever you prefer
-ollama pull nomic-embed-text
-
-# 2. Here
 cp .env.example .env
-#    Ollama on this machine?  OLLAMA_BASE_URL=http://host.docker.internal:11434  (default)
-#    Ollama elsewhere?        OLLAMA_BASE_URL=http://<host>:11434
-
-docker compose up -d --build         # postgres, redis, api, worker + migrations
-docker compose exec -T -e DATABASE_URL="postgresql+asyncpg://app:app@postgres:5432/agentdb" \
-    api python -m scripts.seed_demo  # the Sagar Hotels demo tenant
+docker compose up -d --build     # postgres, redis, api, worker
 ```
 
-With GNU Make installed those last two are `make up` and `make seed`; `make help`
-lists the rest. Everything works without Make — the Makefile is a convenience,
-not a dependency.
-
-Seeding runs **inside** the api container and as the database owner, because the
-`postgres` hostname only resolves on the compose network, and creating a tenant
-is deliberately outside what the application role can do
-([why](docs/tenant-isolation.md#2-row-level-security)).
-
-Then open http://localhost:8000/docs, or:
+On whichever machine runs Ollama:
 
 ```bash
-TOKEN=$(curl -s localhost:8000/api/v1/auth/login \
-  -H 'content-type: application/json' \
-  -d '{"email":"ginza@sagarhotels.example","password":"demo-password-12345"}' \
-  | python -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
-
-curl -s localhost:8000/api/v1/chat -H "authorization: Bearer $TOKEN" \
-  -H 'content-type: application/json' \
-  -d '{"message":"What time is breakfast?","include_trace":true}'
+ollama pull qwen2.5:3b
+ollama pull nomic-embed-text
 ```
 
-Ask the same question as `chiyoda@sagarhotels.example` and you get 10:00, from
-the group document, with no trace of Ginza.
+If that is a different machine, put its address in `.env` as `OLLAMA_BASE_URL`.
+If it is the same machine, the default already points at it. On Windows, Ollama
+listens only to itself until you tell it otherwise, so Docker cannot reach it:
 
-**No model server?** Everything except answer generation still works — upload,
-processing, search, versioning. `GET /health` stays green; `GET /health/ready`
-tells you what is degraded.
+```powershell
+[Environment]::SetEnvironmentVariable("OLLAMA_HOST", "0.0.0.0", "User")
+```
 
-### The website
+Then quit Ollama from the tray and start it again.
+
+Load the demo hotel group and start the website:
 
 ```bash
-make web-install     # once
-make web             # http://localhost:3000
+make seed
+make web-install
+make web
 ```
 
-Three surfaces, and only two of them need a password:
+Open **http://localhost:3000**.
 
-| | | |
-|---|---|---|
-| `/` | **anyone** | every published company; open one and ask it questions |
-| `/admin` | organization administrator | upload knowledge and watch it process, manage branches and people |
-| `/owner` | platform operator | create organizations and their first administrator |
+### Try this, in order
 
-**Customers do not sign in.** The landing page lists every organization, and a
-visitor picks one and asks. Answers cite the document and page they came from.
-Each request reaches exactly one organization, so asking Sagar Hotels about
-breakfast cannot surface anything Aurora Clinics uploaded.
+1. Pick Sagar Hotels and ask *what time is breakfast*. You get 7:00 to 10:00,
+   cited to the group handbook.
+2. Sign in at `/admin` as `admin@sagarhotels.example` with `demo-password-12345`.
+3. Go to Knowledge, add a document, and watch it move through the stages live.
+4. Ask the public site about what you just uploaded. It answers, and cites your file.
 
-Tokens for the two consoles live in httpOnly cookies set by Next route handlers
-that call the API server-side, so no credential is readable by page JavaScript
-and the browser only ever talks to `localhost:3000`.
+To see the branch override, the demo has front desk accounts for each property.
+Ask as Ginza and you get 11:00; ask as Chiyoda and you get 10:00. Both answers
+come from the same stored knowledge. Those accounts are for the API, at
+http://localhost:8000/docs, since the website itself has no visitor login.
 
-The API is also usable directly at `http://localhost:8000/docs`.
-
-### Your own account, and creating real tenants
-
-`seed_demo` makes a demo tenant. For your own, create a **platform operator** —
-an account that belongs to no organization and exists to provision them:
+### The platform owner
 
 ```bash
-docker compose exec \
-  -e DATABASE_URL="postgresql+asyncpg://app:app@postgres:5432/agentdb" \
-  api python -m scripts.create_owner --email you@example.com
+make owner email=you@example.com     # prints a password, once
 ```
 
-It prints a generated password once (`--password` sets your own). Then:
+Sign in at `/owner`. From there you create organizations, give each one its first
+administrator, and decide which ones appear on the public site.
 
-```bash
-OWNER=$(curl -s localhost:8000/api/v1/platform/auth/login \
-  -H 'content-type: application/json' \
-  -d '{"email":"you@example.com","password":"<printed>"}' \
-  | python -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+An owner deliberately **cannot** read any organization's documents, searches or
+conversations. They create tenants; they do not look inside them. If they need
+to, they make themselves an account in that organization, which is recorded.
 
-# An organization, with its first admin. The admin password is returned ONCE.
-curl -s -X POST localhost:8000/api/v1/platform/organizations \
-  -H "authorization: Bearer $OWNER" -H 'content-type: application/json' \
-  -d '{"name":"Northwind Dental","admin_email":"admin@northwind.example"}'
-
-# A customer in it. role=USER, optionally pinned to a location.
-curl -s -X POST localhost:8000/api/v1/platform/organizations/<org-id>/users \
-  -H "authorization: Bearer $OWNER" -H 'content-type: application/json' \
-  -d '{"email":"guest@northwind.example","password":"guest-password-123","role":"USER"}'
-```
-
-That admin then logs in at the ordinary `/auth/login` and manages their own
-organization; the customer logs in there too and can only search and chat.
-
-**The operator token is not a master key.** It provisions tenants; it cannot read
-anyone's documents, search or conversations, and every tenant endpoint rejects
-it. That is deliberate — it keeps "no credential can see two organizations' data"
-true without exceptions. Full reference: [docs/api.md](docs/api.md#platform-operators)
-and [docs/tenant-isolation.md](docs/tenant-isolation.md#platform-operators).
-
----
-
-## What it does
+## What it is built from
 
 | | |
 |---|---|
-| **Multi-tenancy** | Organization → location. Tenant scope comes from the JWT, never a request parameter. Enforced by PostgreSQL Row Level Security under a non-superuser role. |
-| **Hierarchical knowledge** | Group knowledge stored once. Location documents override it by subject; unrelated group knowledge is preserved. |
-| **Ingestion** | Async pipeline: parse → OCR (only when needed) → clean → chunk → embed → index → validate → activate. Progress and per-stage timings queryable. |
-| **Versioning** | Upload v4 while v3 serves every query. v4 goes live only after it passes validation, in one atomic transaction. If it fails, v3 never moved. |
-| **Retrieval** | pgvector (HNSW, cosine) + PostgreSQL full-text search in one SQL round trip, fused with Reciprocal Rank Fusion. |
-| **Agent** | Plan → retrieve → route a model → bounded tool loop → build context → answer, with citations and a replayable trace. |
-| **Providers** | Ollama, Anthropic, OpenAI, Gemini, and any OpenAI-compatible endpoint (vLLM, Groq, Together, OpenRouter, DeepSeek, Mistral, LM Studio). Adding one is a file plus a config entry. |
-| **Streaming** | SSE with semantic events — `stage`, `search`, `conflict`, `tool_call`, `citation`, `token`. |
+| **API and worker** | Python, FastAPI, SQLAlchemy |
+| **Storage** | PostgreSQL, with pgvector for meaning search and its own full text search for exact words |
+| **Queue and live updates** | Redis Streams |
+| **Model** | Ollama by default, on any machine. Anthropic, OpenAI, Gemini, vLLM and anything OpenAI compatible are one config entry away. |
+| **Reading pictures** | Tesseract, behind an interface, so Google Document AI or AWS Textract is a swap rather than a rewrite |
+| **Website** | Next.js and TypeScript |
 
----
+Nothing in the business logic knows which of those it is talking to. Every one of
+them sits behind an interface, which is what makes the model choice a line in a
+config file rather than a project.
 
-## Architecture
+## Why the model can live somewhere else
 
-```
-                                          ┌─ registry-built providers ─┐
- Client ── FastAPI (stateless, N)         │ ollama │ anthropic │ openai│
-             ├── Agent ── ModelRouter ────┤ gemini │ openai_compatible │
-             │      │   (routes on declared└────────────┬───────────────┘
-             │      │    capability & cost)             │ HTTP
-             │      ├── Retrieval ── hybrid search ── pgvector + FTS
-             │      └── ToolRegistry
-             └── Ingestion API ── Redis Streams ── Worker × N
-                            │                        │
-   PARSING → OCR → CLEANING → CHUNKING → EMBEDDING ──┘
-                            → INDEXING → VALIDATING → ACTIVATING
-```
+The backend never assumes the model is local and never looks at this machine's
+memory or graphics card to decide anything. It knows a web address and a model
+name. That means the API can run on a small server while the model runs on a
+machine with a proper graphics card, and moving from Ollama to something else
+later changes configuration rather than code.
 
-Nothing lives in an API process. Workers are stateless and scale independently.
-No model weights are in the backend images.
-
-```
-app/
-  api/          HTTP layer: routers, dependencies, error mapping, middleware
-  core/         config, db + tenancy, security, logging, tracing, errors
-  models/       SQLAlchemy ORM
-  repositories/ the only place SQL lives
-  services/     domain logic: auth, documents, ingestion, retrieval, rag, agent
-  providers/    llm, embeddings, vector_store, search, ocr, storage, queue
-  tools/        agent tools, each with a Pydantic input schema
-  workers/      the ingestion worker
-```
-
-`services/` and `tools/` may import a provider's `base.py` but never a concrete
-implementation — [enforced by a test](tests/unit/test_architecture.py), not by
-convention.
-
----
-
-## Documentation
+## Reading further
 
 | | |
 |---|---|
-| [Architecture](docs/architecture.md) | How a request and a document flow through the system |
-| [Tenant isolation](docs/tenant-isolation.md) | RLS, the two-role split, and the one deliberate exception |
-| [Hybrid search](docs/hybrid-search.md) | Both arms, fusion, and the filtered-ANN recall problem |
-| [Document versioning](docs/versioning.md) | Why activation is atomic, and the four mechanisms that make it so |
-| [Providers](docs/providers.md) | Adding a vendor; the embedding-space migration |
-| [Database](docs/database.md) | Schema, indexes, and why each one exists |
-| [API](docs/api.md) | Endpoints with real requests and responses |
-| [Deployment](docs/deployment.md) | Railway/containers, and reaching a private model server |
-| [Tradeoffs](docs/tradeoffs.md) | What was chosen, what was rejected, and what is deliberately unfinished |
+| [architecture.md](docs/architecture.md) | how the pieces fit |
+| [tenant-isolation.md](docs/tenant-isolation.md) | the four layers, and what each one catches |
+| [hybrid-search.md](docs/hybrid-search.md) | why two searches, and how they are merged |
+| [versioning.md](docs/versioning.md) | how a new version goes live without a gap |
+| [providers.md](docs/providers.md) | adding a model provider |
+| [api.md](docs/api.md) | every endpoint, with real responses |
+| [deployment.md](docs/deployment.md) | running it somewhere other than a laptop |
+| [tradeoffs.md](docs/tradeoffs.md) | what was chosen, and what was given up |
 
----
-
-## Development
+## Tests
 
 ```bash
-python -m venv .venv && .venv/Scripts/pip install -e ".[dev]"   # .venv/bin on unix
-docker compose up -d postgres redis                             # services only
-
-# Migrations and seeding connect as the owner; the app itself uses app_rw.
-export DATABASE_URL="postgresql+asyncpg://app:app@localhost:5432/agentdb"
-.venv/Scripts/python -m alembic upgrade head
-.venv/Scripts/python -m scripts.seed_demo
-unset DATABASE_URL
-
-.venv/Scripts/python -m uvicorn app.main:app --reload --port 8000
-.venv/Scripts/python -m app.workers.runner                      # another terminal
-
-.venv/Scripts/python -m pytest tests/unit    # no services needed
-.venv/Scripts/python -m pytest tests         # everything
+make test               # no services needed
+make test-integration   # needs postgres and redis
+make test-all
 ```
 
-With Make: `make install`, `make services`, `make migrate`, `make seed-local`,
-`make api`, `make worker`, `make test`, `make test-all`, `make check`.
-
-Tests never require a model server: the fake LLM and embedding providers
-implement the same interfaces, so the code under test takes the production path.
-
-The suite includes the two guarantees the specification calls critical:
-
-- `tests/integration/test_retrieval.py` — one tenant can never retrieve
-  another's data, across organizations *and* across locations.
-- `tests/integration/test_versioning.py` — the previous version keeps serving
-  until the new one passes validation.
-
----
-
-## Configuration
-
-Everything is in [`.env.example`](.env.example) and
-[`config/providers.yaml`](config/providers.yaml). Secrets only ever come from the
-environment; the provider manifest references them as `${VAR}` and is safe to
-commit.
-
-The settings worth knowing about:
-
-| | |
-|---|---|
-| `OLLAMA_BASE_URL` | Your model server. The backend never inspects local hardware or picks a model for you. |
-| `EMBEDDING_DIM` | Pinned into the vector column at migration time. Changing it is a [documented procedure](docs/providers.md#changing-the-embedding-model), not an env edit — a boot guard refuses to start on a mismatch. |
-| `DATABASE_URL` | Must be the unprivileged `app_rw` role. A superuser bypasses Row Level Security silently; a boot guard warns, and refuses in production. |
-| `RETRIEVAL__FUSION` | `rrf` (default) or `weighted`. |
+The two that matter most are named after what they protect: one hotel can never
+retrieve another hotel's data, and a new version never replaces a working one
+until it has proved itself.
