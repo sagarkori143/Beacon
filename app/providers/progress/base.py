@@ -72,6 +72,17 @@ class ProgressPublisher(ABC):
     async def follow(self, job_id: UUID, *, after: str | None = None):
         """Yield events for a job as they arrive, resuming after a cursor."""
 
+    @abstractmethod
+    async def cursor(self, job_id: UUID) -> str:
+        """The position to resume from to receive only what happens next.
+
+        A caller that replays durable history first needs this *before* it
+        reads that history. Publishing happens after the database commit, so
+        anything already in the feed is also in the history and would otherwise
+        be delivered twice; anything published during the read arrives after
+        this cursor and is not missed.
+        """
+
     async def health(self) -> ProviderHealth:  # pragma: no cover - trivial
         return ProviderHealth(ok=True, detail={"provider": type(self).__name__})
 

@@ -37,6 +37,9 @@ class BrokenProgress(ProgressPublisher):
     async def follow(self, job_id, *, after=None):  # pragma: no cover - unused
         yield "", {}
 
+    async def cursor(self, job_id):  # pragma: no cover - unused
+        return "0"
+
 
 @pytest.fixture
 def progress() -> MemoryProgress:
@@ -184,6 +187,42 @@ class TestRedisRoundTrip:
         assert event["duration_ms"] == pytest.approx(12.5)
         # Structured detail must arrive as structure, not as a string.
         assert event["detail"] == {"chunks": 7, "sections": 3}
+
+    async def test_a_cursor_taken_first_skips_what_history_already_covered(self, publisher) -> None:
+        """Why the stream endpoint reads the cursor before the database.
+
+        The endpoint replays a job's recorded history from Postgres and then
+        follows the live feed. Following from the start of the stream delivers
+        the early stages a second time -- the watcher sees PARSING, OCR and
+        CLEANING twice. Taking the cursor first, and resuming from it, is what
+        makes the two halves meet exactly once.
+
+        Ordering matters both ways: publishing happens after the database
+        commit, so anything before the cursor is already in the history, and
+        anything after it arrives live rather than being skipped.
+        """
+        job_id = uuid.uuid4()
+
+        # What the durable history would already contain.
+        for stage, value in (("PARSING", 0.2), ("OCR", 0.35)):
+            await publisher.publish(
+                ProgressEvent(job_id=job_id, stage=stage, status="COMPLETED", progress=value)
+            )
+
+        resume_from = await publisher.cursor(job_id)
+
+        # What happens after the watcher connects.
+        await publisher.publish(
+            ProgressEvent(job_id=job_id, stage="CHUNKING", status="COMPLETED", progress=0.55)
+        )
+
+        seen = []
+        async for _entry_id, payload in publisher.follow(job_id, after=resume_from):
+            if payload:
+                seen.append(payload["stage"])
+                break
+
+        assert seen == ["CHUNKING"], f"expected only what came after the cursor, got {seen}"
 
     async def test_a_late_watcher_still_sees_what_it_missed(self, publisher) -> None:
         """Published before anyone was listening, and still delivered.

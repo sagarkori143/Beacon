@@ -102,6 +102,14 @@ async def stream_job_progress(
     The tenant check happens once, up front, before a single byte is streamed:
     a job belonging to another organization is not found, and no stream opens.
     """
+    # Taken *before* reading the history, and this ordering is the whole trick.
+    # The worker publishes only after its database commit, so anything already
+    # in the feed is also in the history below and would be delivered twice;
+    # anything published while that read runs lands after this cursor and is
+    # not missed. Following from the start of the stream instead replays the
+    # first stages a second time.
+    resume_from = await progress.cursor(job_id)
+
     async with uow.begin() as session:
         job = await job_repo.get_job(session, principal.tenant, job_id)
         history = await job_repo.list_events(session, principal.tenant, job_id)
@@ -130,7 +138,7 @@ async def stream_job_progress(
             yield _sse("done", {"job_id": str(job_id), "status": "terminal"})
             return
 
-        async for _entry_id, payload in progress.follow(job_id):
+        async for _entry_id, payload in progress.follow(job_id, after=resume_from):
             if await request.is_disconnected():
                 return
             if not payload:

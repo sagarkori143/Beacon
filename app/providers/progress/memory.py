@@ -27,9 +27,13 @@ class MemoryProgress(ProgressPublisher):
     async def publish(self, event: ProgressEvent) -> None:
         self.published.append(event)
 
+    async def cursor(self, job_id: UUID) -> str:
+        return str(len(self.published))
+
     async def follow(
         self, job_id: UUID, *, after: str | None = None
     ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
+        start = int(after) if after else 0
         for index, event in enumerate(self.published):
-            if event.job_id == job_id:
+            if index >= start and event.job_id == job_id:
                 yield str(index), event.to_payload()

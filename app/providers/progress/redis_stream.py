@@ -87,6 +87,15 @@ class RedisStreamProgress(ProgressPublisher):
                 error=str(exc)[:200],
             )
 
+    async def cursor(self, job_id: UUID) -> str:
+        """The id of the newest entry, or the stream's beginning if it is empty."""
+        try:
+            entries = await self.redis.xrevrange(run_events_key(job_id), count=1)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("progress_cursor_failed", job_id=str(job_id), error=str(exc)[:200])
+            return "0"
+        return entries[0][0] if entries else "0"
+
     async def follow(
         self, job_id: UUID, *, after: str | None = None
     ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
