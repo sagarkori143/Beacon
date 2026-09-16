@@ -6,7 +6,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Query
 
-from app.api.deps import CurrentPrincipal, Providers, Uow
+from app.api.deps import CurrentAdmin, CurrentPrincipal, Providers, Uow
 from app.core.enums import JobStatus
 from app.repositories import ingestion as job_repo
 from app.schemas.document import JobEventOut, JobOut
@@ -58,11 +58,13 @@ async def get_job_events(job_id: UUID, principal: CurrentPrincipal, uow: Uow) ->
 
 
 @router.get("/queue")
-async def queue_stats(principal: CurrentPrincipal, providers: Providers) -> dict:
+async def queue_stats(admin: CurrentAdmin, providers: Providers) -> dict:
     """Queue depth and staleness.
 
     Deliberately not tenant-filtered -- the queue is shared infrastructure and
-    these are operational counters, not tenant data. No document or
+    these are operational counters, not tenant data. Admin-only all the same:
+    backlog depth and staleness say something about the deployment, and there is
+    no reason for that to be readable without a credential. No document or
     organization identifiers are exposed.
     """
     return await providers.require_queue().stats()

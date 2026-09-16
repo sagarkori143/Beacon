@@ -66,6 +66,16 @@ def rate_limit_key(organization_id: UUID, user_id: UUID, window: int) -> str:
     return org_key(organization_id, "rl", str(user_id), str(window))
 
 
+def public_rate_limit_key(organization_id: UUID, client: str, window: int) -> str:
+    """Rate-limit bucket for a visitor who has no account.
+
+    Keyed by caller address rather than user id, and namespaced separately from
+    the signed-in counter so a busy public page cannot consume an
+    organization's own users' allowance.
+    """
+    return org_key(organization_id, "rlpub", client, str(window))
+
+
 def plan_cache_key(organization_id: UUID, query_hash: str) -> str:
     return org_key(organization_id, "plan", query_hash)
 

@@ -25,7 +25,7 @@ from redis.asyncio import Redis
 
 from app.core.errors import RateLimitError, ValidationError
 from app.core.logging import get_logger
-from app.core.redis import rate_limit_key
+from app.core.redis import public_rate_limit_key, rate_limit_key
 
 log = get_logger(__name__)
 
@@ -74,6 +74,44 @@ def screen_input(query: str, *, max_chars: int) -> AdmissionResult:
     return AdmissionResult(query=cleaned.strip(), flagged_patterns=tuple(flagged))
 
 
+async def check_public_rate_limit(
+    redis: Redis,
+    *,
+    organization_id: UUID,
+    client: str,
+    limit_per_minute: int,
+) -> None:
+    """The same fixed window, for callers identified by address rather than id.
+
+    Public chat has no account behind it, and every question costs a model call.
+    Without a limit here one script keeps the model server busy indefinitely and
+    nobody else gets an answer.
+    """
+    if limit_per_minute <= 0:
+        return
+
+    window = int(time.time() // 60)
+    key = public_rate_limit_key(organization_id, client, window)
+    await _consume(redis, key, limit_per_minute)
+
+
+async def _consume(redis: Redis, key: str, limit_per_minute: int) -> None:
+    try:
+        pipeline = redis.pipeline()
+        pipeline.incr(key)
+        pipeline.expire(key, 120)
+        count, _ = await pipeline.execute()
+    except Exception as exc:  # noqa: BLE001 - never fail a request on Redis
+        log.warning("rate_limit_unavailable", error=str(exc)[:200])
+        return
+
+    if int(count) > limit_per_minute:
+        raise RateLimitError(
+            f"Rate limit of {limit_per_minute} requests per minute exceeded",
+            retry_after_s=60 - int(time.time() % 60),
+        )
+
+
 async def check_rate_limit(
     redis: Redis,
     *,
@@ -92,19 +130,4 @@ async def check_rate_limit(
         return
 
     window = int(time.time() // 60)
-    key = rate_limit_key(organization_id, user_id, window)
-
-    try:
-        pipeline = redis.pipeline()
-        pipeline.incr(key)
-        pipeline.expire(key, 120)
-        count, _ = await pipeline.execute()
-    except Exception as exc:  # noqa: BLE001 - never fail a request on Redis
-        log.warning("rate_limit_unavailable", error=str(exc)[:200])
-        return
-
-    if int(count) > limit_per_minute:
-        raise RateLimitError(
-            f"Rate limit of {limit_per_minute} requests per minute exceeded",
-            retry_after_s=60 - int(time.time() % 60),
-        )
+    await _consume(redis, rate_limit_key(organization_id, user_id, window), limit_per_minute)

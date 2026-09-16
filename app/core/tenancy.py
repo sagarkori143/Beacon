@@ -120,6 +120,35 @@ def scopes_for(role: Role) -> frozenset[str]:
     return ROLE_SCOPES.get(role, frozenset())
 
 
+#: Stands in for "nobody in particular" on the public site. A fixed value rather
+#: than a fresh uuid4 per request, so it is recognisable in logs and audit rows
+#: as anonymous traffic instead of looking like thousands of distinct users.
+PUBLIC_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
+
+
+def public_principal(organization_id: UUID) -> Principal:
+    """The identity behind a question asked by a visitor who is not signed in.
+
+    Deliberately an ordinary :class:`Principal`, so every tenant check downstream
+    applies to it unchanged -- the only thing unusual about it is how it was
+    obtained. It carries no location, which
+    ``Retriever._levels`` already reads as organization-wide knowledge only,
+    with no path to any one branch's private material.
+
+    It is granted the plain-user scopes and nothing more: read knowledge, use
+    the basic tools. Anything that writes is out of reach by construction rather
+    than by a check somewhere remembering to say no.
+    """
+    return Principal(
+        user_id=PUBLIC_USER_ID,
+        organization_id=organization_id,
+        role=Role.USER,
+        location_id=None,
+        email=None,
+        scopes=ROLE_SCOPES[Role.USER],
+    )
+
+
 def system_principal(organization_id: UUID, user_id: UUID) -> Principal:
     """Principal used by background workers acting on behalf of an organization.
 

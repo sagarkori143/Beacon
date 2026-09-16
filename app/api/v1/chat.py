@@ -21,26 +21,17 @@ from app.api.deps import (
     get_agent,
     get_redis_client,
 )
+from app.api.v1.chat_support import SSE_HEADERS, build_agent_request, to_chat_response
 from app.core.logging import get_logger
 from app.core.tracing import TraceContext
 from app.repositories import conversation as conversation_repo
-from app.repositories.organization import get_location, get_organization
-from app.schemas.chat import ChatRequest, ChatResponse, CitationOut, UsageOut
+from app.schemas.chat import ChatRequest, ChatResponse
 from app.services.agent.memory import ConversationMemory
-from app.services.agent.runtime import AgentRequest, AgentResult, AgentRuntime
-from app.services.rag.citations import used_citations
+from app.services.agent.runtime import AgentResult, AgentRuntime
 
 log = get_logger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
-
-#: SSE headers that matter in production. Without X-Accel-Buffering, nginx
-#: buffers the whole stream and the user sees nothing until it completes.
-_SSE_HEADERS = {
-    "Cache-Control": "no-cache",
-    "Connection": "keep-alive",
-    "X-Accel-Buffering": "no",
-}
 
 
 @router.post("", response_model=ChatResponse)
@@ -54,13 +45,13 @@ async def chat(
     redis=Depends(get_redis_client),
 ) -> ChatResponse:
     """Ask a question and wait for the complete answer."""
-    request, memory, conversation_id = await _build_request(
+    request, memory, conversation_id = await build_agent_request(
         payload, principal, uow, settings, redis, stream=False
     )
     result = await agent.run(request, trace=trace)
 
     await _persist(uow, memory, principal, conversation_id, payload.message, result, trace)
-    return _to_response(result, conversation_id, include_trace=payload.include_trace)
+    return to_chat_response(result, conversation_id, include_trace=payload.include_trace)
 
 
 @router.post("/stream")
@@ -80,7 +71,7 @@ async def chat_stream(
     ``conflict``, ``tool_call``, ``tool_result``, ``citation``, then ``token``
     for the answer itself, and finally ``usage`` and ``done``.
     """
-    agent_request, memory, conversation_id = await _build_request(
+    agent_request, memory, conversation_id = await build_agent_request(
         payload, principal, uow, settings, redis, stream=True
     )
     result = AgentResult(answer="")
@@ -111,64 +102,12 @@ async def chat_stream(
                     trace,
                 )
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream", headers=_SSE_HEADERS)
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers=SSE_HEADERS)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-async def _build_request(
-    payload: ChatRequest,
-    principal: CurrentPrincipal,
-    uow: Uow,
-    settings: AppSettings,
-    redis,
-    *,
-    stream: bool,
-) -> tuple[AgentRequest, ConversationMemory, uuid.UUID]:
-    """Assemble the agent request: identity, history and organization policy."""
-    conversation_id = payload.conversation_id or uuid.uuid4()
-    memory = ConversationMemory(
-        redis,
-        ttl_s=settings.agent.conversation_ttl_s,
-        max_messages=settings.agent.max_history_messages,
-    )
-    history = await memory.load(principal.organization_id, conversation_id)
-
-    async with uow.begin() as session:
-        organization = await get_organization(session, principal.organization_id)
-        location = (
-            await get_location(session, principal.tenant, principal.location_id)
-            if principal.location_id
-            else None
-        )
-        model_pins = organization.model_pins
-        allowed = organization.allowed_providers
-        organization_name = organization.name
-        location_name = location.name if location else None
-
-    return (
-        AgentRequest(
-            query=payload.message,
-            principal=principal,
-            uow=uow,
-            conversation_id=conversation_id,
-            history=history,
-            organization_name=organization_name,
-            location_name=location_name,
-            enabled_tools=tuple(payload.tools) if payload.tools else None,
-            force_retrieval=payload.force_retrieval,
-            prefer_model=payload.model,
-            model_pins=model_pins,
-            allowed_providers=tuple(allowed) if allowed else None,
-            language=payload.language,
-            stream_tokens=stream,
-        ),
-        memory,
-        conversation_id,
-    )
 
 
 async def _persist(
@@ -211,28 +150,3 @@ async def _persist(
             trace=result.trace,
             citations=result.citations,
         )
-
-
-def _to_response(
-    result: AgentResult, conversation_id: uuid.UUID, *, include_trace: bool
-) -> ChatResponse:
-    # Return only the sources the answer actually cited: listing six under an
-    # answer that drew on two overstates the evidence behind it.
-    citations = used_citations(result.answer, result.context.citations) if result.context else []
-    return ChatResponse(
-        answer=result.answer,
-        conversation_id=conversation_id,
-        citations=[CitationOut(**c.to_dict()) for c in citations],
-        provider=result.routing.provider if result.routing else None,
-        model=result.routing.model if result.routing else None,
-        usage=UsageOut(
-            prompt_tokens=result.usage.prompt_tokens,
-            completion_tokens=result.usage.completion_tokens,
-            estimated_cost_usd=round(result.estimated_cost_usd, 6),
-        ),
-        grounding_ratio=round(result.grounding, 3),
-        low_confidence=result.low_confidence,
-        finish_reason=result.finish_reason,
-        latency_ms=round(result.latency_ms, 1),
-        trace=result.trace if include_trace else None,
-    )

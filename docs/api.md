@@ -12,10 +12,85 @@ with a stable `type` and the `request_id` to quote in a bug report.
 
 ---
 
+## Public site
+
+No credential at all. A visitor opens the landing page, picks a company and asks
+it a question.
+
+This is the one place in the API where **tenant scope comes from a request
+parameter** rather than a token, so it is worth being exact about what that does
+and does not change.
+
+**What changes** is authentication: the organization comes from the URL slug.
+
+**What does not change** is scoping. One request still touches exactly one
+organization. The slug resolves to a single organization, the session is opened
+scoped to that one, and the principal carries no location — which the retriever
+already reads as organization-wide knowledge only, with no path into any one
+branch's private material. The rule that no request sees two tenants survives
+intact.
+
+**What this does expose** is every listed organization's active knowledge, to
+anyone who can reach the site. That is the intended behaviour.
+`organizations.is_public` is the switch, it defaults to `true`, and turning it
+off removes an organization from the listing and makes its slug a `404`.
+
+### `GET /public/organizations`
+
+```json
+[
+  {"id": "8fc376a6-…", "name": "Sagar Hotels",   "slug": "sagar-hotels"},
+  {"id": "ea9ad329-…", "name": "Aurora Clinics", "slug": "aurora-clinics"}
+]
+```
+
+Names and slugs only. Nothing here reveals what any of them know, how much they
+hold, or who works there.
+
+`GET /public/organizations/{slug}` returns one, or `404`.
+
+An unlisted organization is a **`404`, not a `403`** — telling a visitor "that
+exists but you may not have it" confirms the tenant exists, which is itself
+something they should not learn.
+
+### `POST /public/organizations/{slug}/chat`
+
+Body is the ordinary `ChatRequest`; the response is the ordinary `ChatResponse`,
+citations included. The same agent runtime answers both this and a signed-in
+user's question — there is no second implementation that could behave
+differently.
+
+Two deliberate differences from the signed-in endpoint:
+
+| | |
+|---|---|
+| `include_trace` | Ignored. Routing decisions, provider names and retrieval internals are operational detail, not public information. |
+| Conversation storage | Redis only, TTL-bound, so follow-up questions keep their context. **No `conversations` row is written.** Those carry a `user_id` pointing at a real person, and keeping anonymous transcripts indefinitely is a liability nobody asked for. |
+
+`POST /public/organizations/{slug}/chat/stream` is the same thing as SSE, with
+the same event vocabulary as the signed-in stream.
+
+### Rate limiting
+
+Per visitor address, per organization, per minute —
+`AGENT__PUBLIC_RATE_LIMIT_PER_MINUTE`, default 20. Every question costs a model
+call, so without a limit one script keeps the model server busy indefinitely and
+nobody else gets an answer.
+
+It is a separate budget from the signed-in limit, so a busy public page cannot
+consume an organization's own users' allowance. Exceeding it is a `429` with
+`Retry-After`.
+
+`X-Forwarded-For`'s first entry is used when present. That is a rate-limit
+bucket, not an authorisation decision — the worst a spoofed value achieves is
+landing in someone else's bucket.
+
+---
+
 ## Authentication
 
-Every endpoint except `/health` and `/auth/login` needs
-`Authorization: Bearer <access_token>`.
+Every endpoint except `/health`, `/auth/login` and everything under
+`/public` needs `Authorization: Bearer <access_token>`.
 
 **The token carries the tenant.** No endpoint accepts an `organization_id` from
 the client.

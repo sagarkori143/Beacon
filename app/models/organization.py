@@ -23,6 +23,13 @@ class Organization(UUIDMixin, TimestampMixin, Base):
     slug: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
+    # Whether this organization is listed on the public site and answers
+    # questions from visitors who are not signed in. Defaults to true, which is
+    # the product decision: every tenant is publicly askable. It is a column
+    # rather than an implicit "all of them" so a single organization can be
+    # withdrawn without a migration -- see docs/tenant-isolation.md.
+    is_public: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
     # Per-tenant overrides: model pins, allowed providers, feature flags, quotas.
     # Kept as JSONB so adding an org-level knob does not require a migration.
     settings: Mapped[dict[str, Any]] = mapped_column(

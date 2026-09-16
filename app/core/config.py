@@ -305,6 +305,9 @@ class SecuritySettings(BaseModel):
     access_token_ttl_s: int = 60 * 30
     refresh_token_ttl_s: int = 60 * 60 * 24 * 14
     rate_limit_per_minute: int = 60
+    #: Separate, lower budget for visitors who are not signed in. Every question
+    #: costs a model call, and the public site is reachable by anyone.
+    public_rate_limit_per_minute: int = 20
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
 
     @field_validator("jwt_secret")

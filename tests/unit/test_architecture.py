@@ -213,6 +213,27 @@ class TestCredentialBoundary:
             "platform endpoints must take the operator dependency:\n  " + "\n  ".join(unguarded)
         )
 
+    def test_only_the_public_router_builds_a_public_principal(self) -> None:
+        """Anonymous scope has exactly one entry point.
+
+        `public_principal` is the single place where tenant scope comes from a
+        request parameter instead of a token. That is a deliberate, reviewed
+        exception for the public site. If a second module starts constructing
+        one, "scope comes from the token" has quietly stopped being true
+        everywhere else, and nothing would fail to say so.
+        """
+        allowed = {"app/api/v1/public.py", "app/core/tenancy.py"}
+        offenders = [
+            path.relative_to(APP_ROOT.parent).as_posix()
+            for path in APP_ROOT.rglob("*.py")
+            if path.relative_to(APP_ROOT.parent).as_posix() not in allowed
+            and re.search(r"public_principal|PUBLIC_USER_ID", path.read_text("utf-8"))
+        ]
+        assert not offenders, (
+            "only the public router may construct an anonymous principal:\n  "
+            + "\n  ".join(offenders)
+        )
+
     def test_no_tenant_endpoint_accepts_a_platform_credential(self) -> None:
         """Only api/v1/platform.py may resolve a platform token."""
         offenders = [
