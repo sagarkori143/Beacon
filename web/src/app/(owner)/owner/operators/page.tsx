@@ -2,15 +2,15 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { useToast } from "@/components/Toast";
 import TopBar from "@/components/TopBar";
 import { ApiError, api } from "@/lib/api/client";
 
 type Operator = { id: string; email: string; full_name: string | null; is_active: boolean };
 
 export default function Operators() {
+  const toast = useToast();
   const [me, setMe] = useState<{ email: string } | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -20,9 +20,9 @@ export default function Operators() {
     try {
       setMe(await api<{ email: string }>("owner", "auth/me"));
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Could not load your account.");
+      toast("error", e instanceof ApiError ? e.message : "Could not load your account.");
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     void load();
@@ -31,18 +31,16 @@ export default function Operators() {
   async function create(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
-    setError(null);
-    setNote(null);
     try {
       const created = await api<Operator>("owner", "operators", {
         method: "POST",
         body: JSON.stringify({ email: email.trim(), password }),
       });
-      setNote(`${created.email} can now sign in to the platform console.`);
+      toast("ok", `${created.email} can now sign in to the platform console.`);
       setEmail("");
       setPassword("");
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Could not add the operator.");
+      toast("error", e instanceof ApiError ? e.message : "Could not add the operator.");
     } finally {
       setBusy(false);
     }
@@ -61,8 +59,6 @@ export default function Operators() {
         </p>
       </section>
 
-      {error && <div className="notice error">{error}</div>}
-      {note && <div className="notice ok">{note}</div>}
 
       <section className="card">
         <div className="card-head">

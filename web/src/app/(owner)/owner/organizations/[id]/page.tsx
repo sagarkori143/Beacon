@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { use, useCallback, useEffect, useState } from "react";
 
+import { useToast } from "@/components/Toast";
 import TopBar from "@/components/TopBar";
 import { ApiError, api, type Organization, type TenantUser } from "@/lib/api/client";
 import { initials, tint } from "@/lib/ui";
@@ -14,13 +15,12 @@ export default function OrganizationDetail({
 }: {
   params: Promise<{ id: string }>;
 }) {
+  const toast = useToast();
   const { id } = use(params);
 
   const [organization, setOrganization] = useState<Organization | null>(null);
   const [locations, setLocations] = useState<Location[]>([]);
   const [users, setUsers] = useState<TenantUser[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const [branch, setBranch] = useState("");
@@ -41,9 +41,9 @@ export default function OrganizationDetail({
       setLocations(locs);
       setUsers(people);
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Could not load this organization.");
+      toast("error", e instanceof ApiError ? e.message : "Could not load this organization.");
     }
-  }, [id]);
+  }, [id, toast]);
 
   useEffect(() => {
     void load();
@@ -51,13 +51,11 @@ export default function OrganizationDetail({
 
   async function act(key: string, action: () => Promise<void>) {
     setBusyId(key);
-    setError(null);
-    setNote(null);
     try {
       await action();
       await load();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "That did not work.");
+      toast("error", e instanceof ApiError ? e.message : "That did not work.");
     } finally {
       setBusyId(null);
     }
@@ -66,17 +64,16 @@ export default function OrganizationDetail({
   async function addBranch(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
-    setError(null);
     try {
       await api("owner", `organizations/${id}/locations`, {
         method: "POST",
         body: JSON.stringify({ name: branch.trim() }),
       });
-      setNote(`${branch.trim()} added.`);
+      toast("ok", `${branch.trim()} added.`);
       setBranch("");
       await load();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Could not add the branch.");
+      toast("error", e instanceof ApiError ? e.message : "Could not add the branch.");
     } finally {
       setBusy(false);
     }
@@ -85,7 +82,6 @@ export default function OrganizationDetail({
   async function addUser(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
-    setError(null);
     try {
       await api("owner", `organizations/${id}/users`, {
         method: "POST",
@@ -96,13 +92,13 @@ export default function OrganizationDetail({
           location_id: pin || null,
         }),
       });
-      setNote(`${email.trim()} added.`);
+      toast("ok", `${email.trim()} added.`);
       setEmail("");
       setPassword("");
       setPin("");
       await load();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Could not add the user.");
+      toast("error", e instanceof ApiError ? e.message : "Could not add the user.");
     } finally {
       setBusy(false);
     }
@@ -131,7 +127,11 @@ export default function OrganizationDetail({
                 <>
                   <span className="mono">{organization.slug}</span>
                   {" · "}
-                  <Link href={`/c/${organization.slug}`}>public page</Link>
+                  {organization.is_public ? (
+                    <Link href={`/c/${organization.slug}`}>public page</Link>
+                  ) : (
+                    <span className="muted">hidden from the public site</span>
+                  )}
                 </>
               )}
             </p>
@@ -142,8 +142,41 @@ export default function OrganizationDetail({
         </Link>
       </div>
 
-      {error && <div className="notice error">{error}</div>}
-      {note && <div className="notice ok">{note}</div>}
+
+      <section className="card">
+        <div className="spread">
+          <div>
+            <h2>Public site</h2>
+            <p className="hint" style={{ maxWidth: "52ch" }}>
+              {organization?.is_public
+                ? "Listed in the directory. Anyone can open it and ask questions, and every answer comes from this organization's own documents."
+                : "Hidden. It is not in the directory, its address returns nothing, and no visitor can reach its knowledge."}
+            </p>
+          </div>
+          <button
+            className={organization?.is_public ? "danger" : "primary"}
+            disabled={!organization || busyId === "visibility"}
+            onClick={() =>
+              act("visibility", async () => {
+                const next = !organization!.is_public;
+                await api("owner", `organizations/${id}`, {
+                  method: "PATCH",
+                  body: JSON.stringify({ is_public: next }),
+                });
+                toast(
+                  "ok",
+                  next
+                    ? `${organization!.name} is now on the public site.`
+                    : `${organization!.name} is hidden from the public site.`,
+                );
+              })
+            }
+          >
+            {busyId === "visibility" && <span className="spinner" />}
+            {organization?.is_public ? "Hide from public site" : "Publish"}
+          </button>
+        </div>
+      </section>
 
       <section className="card">
         <div className="card-head">
@@ -290,7 +323,7 @@ export default function OrganizationDetail({
                               }`,
                               { method: "POST" },
                             );
-                            setNote(`${u.email} ${u.is_active ? "disabled" : "enabled"}.`);
+                            toast("ok", `${u.email} ${u.is_active ? "disabled" : "enabled"}.`);
                           })
                         }
                       >

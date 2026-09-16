@@ -74,5 +74,7 @@ export type Organization = {
   name: string;
   slug: string;
   is_active: boolean;
+  /** Listed on the public site and answering questions from visitors. */
+  is_public: boolean;
   created_at: string;
 };

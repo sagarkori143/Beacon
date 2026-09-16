@@ -61,6 +61,8 @@ class OrganizationSummary(ORMModel):
     name: str
     slug: str
     is_active: bool
+    #: Listed on the public site and answering questions from visitors.
+    is_public: bool = True
     created_at: datetime
 
 
@@ -102,3 +104,19 @@ class PlatformLocationCreate(BaseModel):
     slug: str | None = Field(default=None, max_length=100, pattern=r"^[a-z0-9-]+$")
     timezone: str = Field(default="UTC", max_length=64)
     settings: dict[str, Any] = Field(default_factory=dict)
+
+
+class OrganizationUpdate(BaseModel):
+    """A partial edit to a tenant. Absent means "leave alone"."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    #: Whether the organization is listed on the public site and answers
+    #: questions from visitors who are not signed in. Turning this off removes
+    #: it from the directory and makes its slug a 404.
+    is_public: bool | None = None
+    #: Suspends the tenant entirely: nobody can sign in and it disappears from
+    #: the public site regardless of `is_public`.
+    is_active: bool | None = None
+
+    # `slug` is deliberately absent -- it is the public page's address and
+    # appears in stored object keys.

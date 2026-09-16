@@ -133,3 +133,30 @@ async def update_location(
         setattr(location, field_name, value)
     await session.flush()
     return location
+
+
+UPDATABLE_ORGANIZATION_FIELDS = frozenset({"name", "is_active", "is_public"})
+
+
+async def update_organization(
+    session: AsyncSession, organization_id: UUID, changes: dict[str, object]
+) -> Organization:
+    """Edit a tenant's own record.
+
+    `slug` is not updatable: it is the address of the organization's public page
+    and appears in stored object keys, so changing it would break links people
+    already have and orphan files already written.
+
+    `settings` is not updatable here either. It carries model pins and the
+    allowed-provider list, which are routing policy rather than profile -- those
+    belong to whoever operates the deployment, not to a rename form.
+    """
+    unknown = set(changes) - UPDATABLE_ORGANIZATION_FIELDS
+    if unknown:
+        raise ValueError(f"Not updatable: {sorted(unknown)}")
+
+    organization = await get_organization(session, organization_id)
+    for field_name, value in changes.items():
+        setattr(organization, field_name, value)
+    await session.flush()
+    return organization

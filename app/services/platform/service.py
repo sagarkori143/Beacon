@@ -228,6 +228,37 @@ class PlatformService:
             admin_password=generated if admin_password is None else None,
         )
 
+    async def update_organization(
+        self,
+        operator: PlatformPrincipal,
+        *,
+        organization_id: UUID,
+        changes: dict,
+    ) -> Organization:
+        """Rename a tenant, or take it off the public site.
+
+        `is_public` is the switch that governs whether an organization's
+        knowledge answers questions from visitors who are not signed in. It is
+        the operator's to set, not the tenant's -- a tenant admin turning their
+        own organization public would be publishing on the deployment's behalf.
+        """
+        async with platform_session(organization_id, self.settings) as session:
+            organization = await org_repo.update_organization(session, organization_id, changes)
+            await audit_repo.record(
+                session,
+                organization_id=organization_id,
+                action=AuditAction.ORGANIZATION_UPDATE,
+                resource_type="organization",
+                resource_id=organization_id,
+                message=f"{', '.join(sorted(changes))} changed by {operator.email}",
+            )
+            log.info(
+                "organization_updated",
+                organization_id=str(organization_id),
+                fields=sorted(changes),
+            )
+            return organization
+
     # -- locations -----------------------------------------------------------
 
     async def create_location(

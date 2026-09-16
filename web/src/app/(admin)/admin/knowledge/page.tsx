@@ -1,9 +1,11 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 
-import Timeline from "@/components/Timeline";
+import Confirm from "@/components/Confirm";
+import { useToast } from "@/components/Toast";
 import TopBar from "@/components/TopBar";
+import Uploader from "@/components/Uploader";
 import { ApiError, api, type Page } from "@/lib/api/client";
 import { formatWhen } from "@/lib/ui";
 
@@ -27,89 +29,72 @@ type Version = {
   size_bytes: number;
   chunk_count: number;
   ocr_used: boolean;
+  ocr_page_count: number;
+  page_count: number | null;
+  error_message: string | null;
   created_at: string;
 };
 
-type Upload = { document_id: string; version_id: string; job_id: string };
-
 export default function Knowledge() {
+  const toast = useToast();
   const [organization, setOrganization] = useState<string | null>(null);
   const [documents, setDocuments] = useState<Page<Document> | null>(null);
   const [locations, setLocations] = useState<Location[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  const [file, setFile] = useState<File | null>(null);
-  const [title, setTitle] = useState("");
-  const [scope, setScope] = useState("");
-  const [uploading, setUploading] = useState(false);
-  const [job, setJob] = useState<Upload | null>(null);
-  const [over, setOver] = useState(false);
-  const picker = useRef<HTMLInputElement>(null);
+  const [search, setSearch] = useState("");
+  const [scopeFilter, setScopeFilter] = useState("");
 
   const [openDoc, setOpenDoc] = useState<string | null>(null);
   const [versions, setVersions] = useState<Record<string, Version[]>>({});
+  const [confirming, setConfirming] = useState<Document | null>(null);
+  const [showUpload, setShowUpload] = useState(false);
 
   const load = useCallback(async () => {
     try {
       const [me, docs, locs] = await Promise.all([
         api<{ organization: { name: string } }>("admin", "auth/me"),
-        api<Page<Document>>("admin", "documents?limit=100"),
-        api<Page<Location>>("admin", "locations?include_inactive=false"),
+        api<Page<Document>>("admin", "documents?limit=200"),
+        api<Page<Location>>("admin", "locations"),
       ]);
       setOrganization(me.organization.name);
       setDocuments(docs);
       setLocations(locs.items);
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Could not load the knowledge base.");
+      toast("error", e instanceof ApiError ? e.message : "Could not load the knowledge base.");
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  async function upload(event: React.FormEvent) {
-    event.preventDefault();
-    if (!file) return;
+  const branchName = useCallback(
+    (id: string | null) => (id ? (locations.find((l) => l.id === id)?.name ?? "a branch") : null),
+    [locations],
+  );
 
-    setUploading(true);
-    setError(null);
-    setNote(null);
-    setJob(null);
-
-    const form = new FormData();
-    form.append("file", file);
-    if (title.trim()) form.append("title", title.trim());
-    if (scope) form.append("location_id", scope);
-
-    try {
-      const response = await fetch("/api/admin/documents", { method: "POST", body: form });
-      if (!response.ok) {
-        const problem = await response.json().catch(() => ({}));
-        throw new Error(problem.detail ?? "The upload was refused.");
-      }
-      setJob((await response.json()) as Upload);
-      setFile(null);
-      setTitle("");
-      if (picker.current) picker.current.value = "";
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "The upload failed.");
-    } finally {
-      setUploading(false);
-    }
-  }
+  const shown = useMemo(() => {
+    const all = documents?.items ?? [];
+    const needle = search.trim().toLowerCase();
+    return all.filter((d) => {
+      if (scopeFilter === "org" && d.location_id !== null) return false;
+      if (scopeFilter && scopeFilter !== "org" && d.location_id !== scopeFilter) return false;
+      if (!needle) return true;
+      return (
+        d.title.toLowerCase().includes(needle) ||
+        (d.document_type ?? "").toLowerCase().includes(needle)
+      );
+    });
+  }, [documents, search, scopeFilter]);
 
   async function act(id: string, action: () => Promise<void>) {
     setBusyId(id);
-    setError(null);
-    setNote(null);
     try {
       await action();
       await load();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "That did not work.");
+      toast("error", e instanceof ApiError ? e.message : "That did not work.");
     } finally {
       setBusyId(null);
     }
@@ -122,135 +107,85 @@ export default function Knowledge() {
     }
     setOpenDoc(documentId);
     if (!versions[documentId]) {
-      const list = await api<Version[]>("admin", `documents/${documentId}/versions`);
-      setVersions((prior) => ({ ...prior, [documentId]: list }));
+      try {
+        const list = await api<Version[]>("admin", `documents/${documentId}/versions`);
+        setVersions((prior) => ({ ...prior, [documentId]: list }));
+      } catch (e) {
+        toast("error", e instanceof ApiError ? e.message : "Could not load the versions.");
+      }
     }
   }
-
-  const branchName = (id: string | null) =>
-    id ? (locations.find((l) => l.id === id)?.name ?? "a branch") : null;
 
   return (
     <div className="shell">
       <TopBar console_="admin" subtitle={organization} />
 
-      {error && <div className="notice error">{error}</div>}
-      {note && <div className="notice ok">{note}</div>}
-
-      <section className="card">
-        <div className="card-head">
-          <h2>Add knowledge</h2>
-          <p className="hint">
-            <strong>General</strong> knowledge answers for every branch.{" "}
-            <strong>Branch</strong> knowledge overrides it on whatever subjects it covers, and
-            leaves the rest alone.
+      <div className="spread" style={{ marginBottom: 20 }}>
+        <div>
+          <h1 style={{ fontSize: 24 }}>Knowledge</h1>
+          <p className="lede" style={{ marginTop: 6 }}>
+            What {organization ?? "this organization"} answers from. Everything here is
+            searchable the moment it finishes processing.
           </p>
         </div>
+        <button className="primary" onClick={() => setShowUpload((v) => !v)}>
+          {showUpload ? "Close" : "Add documents"}
+        </button>
+      </div>
 
-        <form onSubmit={upload}>
-          <div
-            className={`dropzone ${over ? "over" : ""}`}
-            onClick={() => picker.current?.click()}
-            onDragOver={(e) => {
-              e.preventDefault();
-              setOver(true);
-            }}
-            onDragLeave={() => setOver(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setOver(false);
-              const dropped = e.dataTransfer.files?.[0];
-              if (dropped) setFile(dropped);
-            }}
-          >
-            {file ? (
-              <>
-                <div className="file">{file.name}</div>
-                <p className="hint">{(file.size / 1024).toFixed(0)} KB · click to replace</p>
-              </>
-            ) : (
-              <>
-                <div className="file">Drop a file here, or click to choose</div>
-                <p className="hint">PDF, Word, Markdown or plain text — up to 50 MB</p>
-              </>
-            )}
-            <input
-              ref={picker}
-              type="file"
-              hidden
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-            />
-          </div>
-
-          <div className="row" style={{ marginTop: 14 }}>
-            <div className="field">
-              <label htmlFor="title">Title (optional)</label>
-              <input
-                id="title"
-                placeholder="Taken from the filename"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="scope">Applies to</label>
-              <select id="scope" value={scope} onChange={(e) => setScope(e.target.value)}>
-                <option value="">General — every branch</option>
-                {locations.map((l) => (
-                  <option key={l.id} value={l.id}>
-                    {l.name} only
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <button className="primary" disabled={!file || uploading}>
-            {uploading && <span className="spinner" />}
-            {uploading ? "Uploading" : "Upload and process"}
-          </button>
-        </form>
-
-        {job && (
-          <div style={{ marginTop: 22, paddingTop: 20, borderTop: "1px solid var(--line)" }}>
-            <Timeline
-              jobId={job.job_id}
-              onSettled={(status) => {
-                setNote(
-                  status === "COMPLETED"
-                    ? "Processed and live. It will answer questions now."
-                    : null,
-                );
-                void load();
-              }}
-            />
-          </div>
-        )}
-      </section>
-
-      <section className="card">
-        <div className="spread card-head">
-          <div>
-            <h2>Documents</h2>
-            <p className="hint" style={{ margin: 0 }}>
-              {documents?.total ?? 0} in this organization
+      {showUpload && (
+        <section className="card rise">
+          <div className="card-head">
+            <h2>Add documents</h2>
+            <p className="hint">
+              Handbooks, policies, price lists, FAQs — anything a person might be asked about.
             </p>
           </div>
-          <button className="small" onClick={() => void load()}>
-            Refresh
-          </button>
+          <Uploader
+            locations={locations.filter((l) => l.is_active)}
+            onFinished={() => void load()}
+          />
+        </section>
+      )}
+
+      <section className="card">
+        <div className="filters">
+          <input
+            placeholder="Search documents"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            aria-label="Search documents"
+          />
+          <select
+            value={scopeFilter}
+            onChange={(e) => setScopeFilter(e.target.value)}
+            aria-label="Filter by scope"
+          >
+            <option value="">All scopes</option>
+            <option value="org">General only</option>
+            {locations.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.name} only
+              </option>
+            ))}
+          </select>
+          <span className="muted" style={{ fontSize: 12.5 }}>
+            {shown.length} of {documents?.total ?? 0}
+          </span>
         </div>
 
         {documents === null ? (
           <div className="stack">
             {[0, 1, 2].map((i) => (
-              <div key={i} className="skeleton" style={{ height: 40 }} />
+              <div key={i} className="skeleton" style={{ height: 42 }} />
             ))}
           </div>
-        ) : documents.items.length === 0 ? (
+        ) : shown.length === 0 ? (
           <div className="empty">
             <div className="mark">·</div>
-            Nothing here yet. Upload a handbook or policy to get started.
+            {documents.items.length === 0
+              ? "Nothing here yet. Add a handbook or policy to get started."
+              : "Nothing matches those filters."}
           </div>
         ) : (
           <div className="table-wrap">
@@ -264,7 +199,7 @@ export default function Knowledge() {
                 </tr>
               </thead>
               <tbody>
-                {documents.items.map((doc) => (
+                {shown.map((doc) => (
                   <Fragment key={doc.id}>
                     <tr>
                       <td>
@@ -285,25 +220,13 @@ export default function Knowledge() {
                       <td className="muted">{formatWhen(doc.created_at)}</td>
                       <td>
                         <div className="actions">
-                          <button
-                            className="small"
-                            onClick={() => void toggleVersions(doc.id)}
-                          >
-                            {openDoc === doc.id ? "Hide versions" : "Versions"}
+                          <button className="small" onClick={() => void toggleVersions(doc.id)}>
+                            {openDoc === doc.id ? "Hide" : "Versions"}
                           </button>
                           <button
                             className="small danger"
                             disabled={busyId === doc.id}
-                            onClick={() =>
-                              act(doc.id, async () => {
-                                await api("admin", `documents/${doc.id}/archive`, {
-                                  method: "POST",
-                                });
-                                setNote(
-                                  `“${doc.title}” archived. It has stopped answering questions.`,
-                                );
-                              })
-                            }
+                            onClick={() => setConfirming(doc)}
                           >
                             Archive
                           </button>
@@ -315,22 +238,53 @@ export default function Knowledge() {
                       <tr>
                         <td colSpan={4} style={{ background: "var(--surface-2)" }}>
                           {!versions[doc.id] ? (
-                            <div className="skeleton" style={{ height: 30 }} />
+                            <div className="skeleton" style={{ height: 32 }} />
                           ) : (
-                            <div className="stack">
+                            <div className="stack" style={{ gap: 10 }}>
                               {versions[doc.id].map((v) => (
                                 <div key={v.id} className="spread">
-                                  <span className="status-line">
-                                    <span
-                                      className={`pill ${v.status === "ACTIVE" ? "ok" : ""}`}
-                                    >
-                                      v{v.version_number} · {v.status.toLowerCase()}
+                                  <div style={{ minWidth: 0 }}>
+                                    <span className="status-line">
+                                      <span
+                                        className={`pill ${
+                                          v.status === "ACTIVE"
+                                            ? "ok"
+                                            : v.status === "FAILED"
+                                              ? "danger"
+                                              : ""
+                                        }`}
+                                      >
+                                        v{v.version_number} · {v.status.toLowerCase()}
+                                      </span>
+                                      <span className="muted" style={{ fontSize: 12 }}>
+                                        {v.filename}
+                                      </span>
                                     </span>
-                                    <span className="muted" style={{ fontSize: 12 }}>
-                                      {v.filename} · {v.chunk_count} chunks
-                                      {v.ocr_used && " · OCR"}
-                                    </span>
-                                  </span>
+                                    <div className="step-detail">
+                                      <span className="chip">
+                                        <b>{v.chunk_count}</b> chunks
+                                      </span>
+                                      {v.page_count != null && (
+                                        <span className="chip">
+                                          <b>{v.page_count}</b> pages
+                                        </span>
+                                      )}
+                                      {v.ocr_used && (
+                                        <span className="chip">
+                                          OCR on <b>{v.ocr_page_count}</b> pages
+                                        </span>
+                                      )}
+                                      <span className="chip">
+                                        {(v.size_bytes / 1024).toFixed(0)} KB
+                                      </span>
+                                    </div>
+                                    {v.error_message && (
+                                      <p className="hint" style={{ color: "var(--danger)" }}>
+                                        {v.error_message.slice(0, 180)}
+                                      </p>
+                                    )}
+                                  </div>
+
                                   <div className="actions">
                                     <a
                                       className="pill"
@@ -348,13 +302,14 @@ export default function Knowledge() {
                                               `documents/versions/${v.id}/activate`,
                                               { method: "POST" },
                                             );
-                                            setNote(
-                                              `Version ${v.version_number} is live.`,
+                                            toast(
+                                              "ok",
+                                              `Version ${v.version_number} is now the one answering.`,
                                             );
                                             setVersions((p) => {
-                                              const next = { ...p };
-                                              delete next[doc.id];
-                                              return next;
+                                              const n = { ...p };
+                                              delete n[doc.id];
+                                              return n;
                                             });
                                           })
                                         }
@@ -377,6 +332,31 @@ export default function Knowledge() {
           </div>
         )}
       </section>
+
+      <Confirm
+        open={confirming !== null}
+        title={`Archive “${confirming?.title ?? ""}”?`}
+        body="It stops answering questions immediately and leaves this list. Nothing is deleted — you can restore it, and every version is kept."
+        confirmLabel="Archive"
+        danger
+        onCancel={() => setConfirming(null)}
+        onConfirm={() => {
+          const doc = confirming;
+          setConfirming(null);
+          if (!doc) return;
+          void act(doc.id, async () => {
+            const result = await api<{ chunks_withdrawn: number }>(
+              "admin",
+              `documents/${doc.id}/archive`,
+              { method: "POST" },
+            );
+            toast(
+              "ok",
+              `“${doc.title}” archived — ${result.chunks_withdrawn} passages stopped answering.`,
+            );
+          });
+        }}
+      />
     </div>
   );
 }

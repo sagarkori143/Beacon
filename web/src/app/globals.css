@@ -1064,3 +1064,265 @@ tbody tr:last-child td {
     padding: 34px 0 26px;
   }
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Toasts, dialogs and the rest of the shared chrome
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.toasts {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: min(400px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  gap: 11px;
+  align-items: flex-start;
+  padding: 13px 14px;
+  border-radius: var(--r);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-lg);
+  font-size: 13px;
+  animation: toast-in 260ms var(--ease) both;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+}
+
+.toast-icon {
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 700;
+  flex: none;
+  margin-top: 1px;
+  background: var(--surface-3);
+  color: var(--ink-2);
+}
+
+.toast.ok .toast-icon {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.toast.error .toast-icon {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.toast.ok {
+  border-color: color-mix(in srgb, var(--ok) 35%, transparent);
+}
+.toast.error {
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+}
+
+.toast-body {
+  flex: 1;
+  min-width: 0;
+}
+.toast-close {
+  flex: none;
+  padding: 2px 6px;
+  margin: -2px -4px 0 0;
+}
+
+/* ── Dialog ───────────────────────────────────────────────────────────────── */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  background: rgba(4, 6, 12, 0.62);
+  backdrop-filter: blur(3px);
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  animation: rise 160ms var(--ease) both;
+}
+
+.dialog {
+  width: 100%;
+  max-width: 420px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  padding: 24px;
+  box-shadow: var(--shadow-lg);
+}
+
+.dialog h2 {
+  font-size: 17px;
+  margin-bottom: 8px;
+}
+
+/* ── Stat tiles ───────────────────────────────────────────────────────────── */
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 18px 20px;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  transition: border-color var(--med), transform var(--med);
+}
+
+a.stat:hover {
+  border-color: var(--accent-line);
+  transform: translateY(-2px);
+}
+
+.stat .value {
+  font-size: 28px;
+  font-weight: 660;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+}
+
+/* ── Filter bar ───────────────────────────────────────────────────────────── */
+
+.filters {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.filters input,
+.filters select {
+  width: auto;
+  min-width: 150px;
+  padding: 7px 10px;
+  font-size: 13px;
+}
+
+.seg {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  gap: 2px;
+}
+
+.seg button {
+  border: none;
+  background: transparent;
+  padding: 5px 11px;
+  font-size: 12.5px;
+  border-radius: 6px;
+  color: var(--ink-3);
+}
+
+.seg button:hover:not(:disabled) {
+  transform: none;
+  background: transparent;
+  color: var(--ink-2);
+}
+
+.seg button[aria-pressed="true"] {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-sm);
+}
+
+/* ── Upload queue ─────────────────────────────────────────────────────────── */
+
+.queue-item {
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 15px 16px;
+  background: var(--surface-2);
+  animation: rise var(--med) both;
+}
+
+.queue-item + .queue-item {
+  margin-top: 10px;
+}
+
+.queue-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.filename {
+  font-weight: 560;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Misc ─────────────────────────────────────────────────────────────────── */
+
+.kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 5px 16px;
+  font-size: 13px;
+}
+
+.kv dt {
+  color: var(--ink-3);
+}
+.kv dd {
+  margin: 0;
+}
+
+.passage {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink-2);
+  border-left: 2px solid var(--accent-line);
+  padding: 2px 0 2px 12px;
+  margin-top: 8px;
+  white-space: pre-wrap;
+}
+
+.back {
+  color: var(--ink-3);
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: color var(--fast), gap var(--fast);
+}
+.back:hover {
+  color: var(--ink);
+  gap: 9px;
+}
+
+@media (max-width: 640px) {
+  .toasts {
+    left: 14px;
+    right: 14px;
+    bottom: 14px;
+    max-width: none;
+  }
+  .nav a {
+    padding: 6px 9px;
+    font-size: 13px;
+  }
+  .topbar {
+    gap: 10px;
+  }
+}

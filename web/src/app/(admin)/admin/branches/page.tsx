@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { useToast } from "@/components/Toast";
 import TopBar from "@/components/TopBar";
 import { ApiError, api, type Page } from "@/lib/api/client";
 
@@ -25,10 +26,9 @@ const ZONES = [
 ];
 
 export default function Branches() {
+  const toast = useToast();
   const [organization, setOrganization] = useState<string | null>(null);
   const [branches, setBranches] = useState<Location[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [draftName, setDraftName] = useState("");
@@ -46,9 +46,9 @@ export default function Branches() {
       setOrganization(me.organization.name);
       setBranches(list.items);
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Could not load the branches.");
+      toast("error", e instanceof ApiError ? e.message : "Could not load the branches.");
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     void load();
@@ -56,13 +56,11 @@ export default function Branches() {
 
   async function act(id: string, action: () => Promise<void>) {
     setBusyId(id);
-    setError(null);
-    setNote(null);
     try {
       await action();
       await load();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "That did not work.");
+      toast("error", e instanceof ApiError ? e.message : "That did not work.");
     } finally {
       setBusyId(null);
     }
@@ -71,8 +69,6 @@ export default function Branches() {
   async function create(event: React.FormEvent) {
     event.preventDefault();
     setCreating(true);
-    setError(null);
-    setNote(null);
     try {
       const slug = name
         .trim()
@@ -84,11 +80,11 @@ export default function Branches() {
         method: "POST",
         body: JSON.stringify({ name: name.trim(), slug, timezone }),
       });
-      setNote(`${name.trim()} added.`);
+      toast("ok", `${name.trim()} added.`);
       setName("");
       await load();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Could not add the branch.");
+      toast("error", e instanceof ApiError ? e.message : "Could not add the branch.");
     } finally {
       setCreating(false);
     }
@@ -98,8 +94,6 @@ export default function Branches() {
     <div className="shell">
       <TopBar console_="admin" subtitle={organization} />
 
-      {error && <div className="notice error">{error}</div>}
-      {note && <div className="notice ok">{note}</div>}
 
       <section className="card">
         <div className="card-head">
@@ -193,7 +187,7 @@ export default function Branches() {
                                   body: JSON.stringify({ name: draftName.trim() }),
                                 });
                                 setEditing(null);
-                                setNote("Branch renamed.");
+                                toast("ok", "Branch renamed.");
                               });
                             }
                           }}
@@ -239,8 +233,7 @@ export default function Branches() {
                                 method: "PATCH",
                                 body: JSON.stringify({ is_active: !b.is_active }),
                               });
-                              setNote(
-                                `${b.name} ${b.is_active ? "deactivated" : "reactivated"}.`,
+                              toast("ok", `${b.name} ${b.is_active ? "deactivated" : "reactivated"}.`,
                               );
                             })
                           }

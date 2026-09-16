@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { useToast } from "@/components/Toast";
 import TopBar from "@/components/TopBar";
 import { ApiError, api, type Page, type TenantUser } from "@/lib/api/client";
 
@@ -14,11 +15,9 @@ type Me = {
 type ResetResult = { user: TenantUser; password: string | null };
 
 export default function AdminConsole() {
+  const toast = useToast();
   const [me, setMe] = useState<Me | null>(null);
   const [page, setPage] = useState<Page<TenantUser> | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
-  const [secret, setSecret] = useState<ResetResult | null>(null);
   const [pending, setPending] = useState<string | null>(null);
 
   const [email, setEmail] = useState("");
@@ -36,9 +35,9 @@ export default function AdminConsole() {
       setMe(profile);
       setPage(users);
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Could not load this organization.");
+      toast("error", e instanceof ApiError ? e.message : "Could not load this organization.");
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     void load();
@@ -47,13 +46,11 @@ export default function AdminConsole() {
   /** Run one mutation, surfacing the backend's own message when it refuses. */
   async function run(id: string, action: () => Promise<void>) {
     setPending(id);
-    setError(null);
-    setNote(null);
     try {
       await action();
       await load();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "That did not work.");
+      toast("error", e instanceof ApiError ? e.message : "That did not work.");
     } finally {
       setPending(null);
     }
@@ -62,8 +59,6 @@ export default function AdminConsole() {
   async function createUser(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
-    setError(null);
-    setNote(null);
     try {
       await api<TenantUser>("admin", "auth/users", {
         method: "POST",
@@ -74,14 +69,14 @@ export default function AdminConsole() {
           full_name: fullName.trim() || null,
         }),
       });
-      setNote(`${email} added.`);
+      toast("ok", `${email} added.`);
       setEmail("");
       setFullName("");
       setPassword("");
       setRole("USER");
       await load();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Could not create the user.");
+      toast("error", e instanceof ApiError ? e.message : "Could not create the user.");
     } finally {
       setBusy(false);
     }
@@ -93,16 +88,6 @@ export default function AdminConsole() {
     <div className="shell">
       <TopBar console_="admin" subtitle={me?.organization.name} />
 
-      {error && <div className="notice error">{error}</div>}
-      {note && <div className="notice ok">{note}</div>}
-      {secret?.password && (
-        <div className="notice secret">
-          New password for <strong>{secret.user.email}</strong> — shown once, stored only as a
-          hash.
-          <br />
-          <span className="secret-value">{secret.password}</span>
-        </div>
-      )}
 
       <section className="card">
         <h2>Add someone</h2>
@@ -224,8 +209,7 @@ export default function AdminConsole() {
                                     role: u.role === "ADMIN" ? "USER" : "ADMIN",
                                   }),
                                 });
-                                setNote(
-                                  `${u.email} is now ${
+                                toast("ok", `${u.email} is now ${
                                     u.role === "ADMIN" ? "a user" : "an administrator"
                                   }. Their sessions were ended.`,
                                 );
@@ -245,7 +229,15 @@ export default function AdminConsole() {
                                   `users/${u.id}/reset-password`,
                                   { method: "POST", body: JSON.stringify({}) },
                                 );
-                                setSecret(result);
+                                if (result.password) {
+                                  toast(
+                                    "info",
+                                    `New password for ${u.email} — shown once, stored only as a hash.`,
+                                    result.password,
+                                  );
+                                } else {
+                                  toast("ok", `Password changed for ${u.email}.`);
+                                }
                               })
                             }
                           >
@@ -262,8 +254,7 @@ export default function AdminConsole() {
                                   `users/${u.id}/${u.is_active ? "disable" : "enable"}`,
                                   { method: "POST" },
                                 );
-                                setNote(
-                                  `${u.email} ${u.is_active ? "disabled" : "enabled"}.`,
+                                toast("ok", `${u.email} ${u.is_active ? "disabled" : "enabled"}.`,
                                 );
                               })
                             }

@@ -29,6 +29,7 @@ from app.schemas.platform import (
     OperatorOut,
     OrganizationCreate,
     OrganizationSummary,
+    OrganizationUpdate,
     PlatformLocationCreate,
     PlatformLoginRequest,
     PlatformTokenResponse,
@@ -175,6 +176,27 @@ async def get_organization(
     organization_id: UUID, operator: CurrentOperator, service: Service
 ) -> OrganizationSummary:
     return OrganizationSummary.model_validate(await service.get_organization(organization_id))
+
+
+@router.patch("/organizations/{organization_id}", response_model=OrganizationSummary)
+async def update_organization(
+    organization_id: UUID,
+    payload: OrganizationUpdate,
+    operator: CurrentOperator,
+    service: Service,
+) -> OrganizationSummary:
+    """Rename a tenant, or change whether the public site lists it.
+
+    Turning `is_public` off removes the organization from the directory and
+    makes its slug a 404 -- its knowledge stops being readable by anyone without
+    an account, immediately and without a migration.
+    """
+    organization = await service.update_organization(
+        operator,
+        organization_id=organization_id,
+        changes=payload.model_dump(exclude_unset=True),
+    )
+    return OrganizationSummary.model_validate(organization)
 
 
 # ---------------------------------------------------------------------------

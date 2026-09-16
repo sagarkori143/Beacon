@@ -173,6 +173,7 @@ class AuditAction(StrEnum):
     # Platform-operator actions. Recorded against the organization they touch,
     # so a tenant's audit trail shows provisioning done on their behalf.
     ORGANIZATION_CREATE = "ORGANIZATION_CREATE"
+    ORGANIZATION_UPDATE = "ORGANIZATION_UPDATE"
     LOCATION_CREATE = "LOCATION_CREATE"
     USER_CREATE = "USER_CREATE"
     USER_DISABLE = "USER_DISABLE"

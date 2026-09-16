@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
+import { useToast } from "@/components/Toast";
 import TopBar from "@/components/TopBar";
 import { ApiError, api, type Organization } from "@/lib/api/client";
 import { initials, tint } from "@/lib/ui";
@@ -14,9 +15,8 @@ type Provisioned = {
 };
 
 export default function OwnerConsole() {
+  const toast = useToast();
   const [organizations, setOrganizations] = useState<Organization[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [created, setCreated] = useState<Provisioned | null>(null);
 
   const [name, setName] = useState("");
   const [adminEmail, setAdminEmail] = useState("");
@@ -26,9 +26,9 @@ export default function OwnerConsole() {
     try {
       setOrganizations(await api<Organization[]>("owner", "organizations"));
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Could not load organizations.");
+      toast("error", e instanceof ApiError ? e.message : "Could not load organizations.");
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     void load();
@@ -37,7 +37,6 @@ export default function OwnerConsole() {
   async function createOrganization(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
-    setError(null);
     try {
       const result = await api<Provisioned>("owner", "organizations", {
         method: "POST",
@@ -46,12 +45,20 @@ export default function OwnerConsole() {
           admin_email: adminEmail.trim() ? adminEmail.trim() : null,
         }),
       });
-      setCreated(result);
+      if (result.admin_password) {
+        toast(
+          "info",
+          `${result.organization.name} created. Give ${result.admin_email} this password — it is stored only as a hash and will never be shown again.`,
+          result.admin_password,
+        );
+      } else {
+        toast("ok", `${result.organization.name} created.`);
+      }
       setName("");
       setAdminEmail("");
       await load();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Could not create the organization.");
+      toast("error", e instanceof ApiError ? e.message : "Could not create the organization.");
     } finally {
       setBusy(false);
     }
@@ -70,24 +77,6 @@ export default function OwnerConsole() {
           </p>
         </div>
 
-        {error && <div className="notice error">{error}</div>}
-
-        {created && (
-          <div className="notice secret">
-            <strong>{created.organization.name}</strong> created.
-            {created.admin_password ? (
-              <>
-                {" "}
-                Give <strong>{created.admin_email}</strong> this password — it is stored only
-                as a hash and will never be shown again.
-                <br />
-                <span className="secret-value">{created.admin_password}</span>
-              </>
-            ) : (
-              " No administrator was created for it yet."
-            )}
-          </div>
-        )}
 
         <form onSubmit={createOrganization}>
           <div className="row">
@@ -162,7 +151,18 @@ export default function OwnerConsole() {
                     >
                       {initials(o.name)}
                     </span>
-                    {!o.is_active && <span className="pill danger">inactive</span>}
+                    <span className="actions">
+                      {!o.is_active && <span className="pill danger">suspended</span>}
+                      {o.is_active && !o.is_public && (
+                        <span className="pill">hidden</span>
+                      )}
+                      {o.is_active && o.is_public && (
+                        <span className="pill ok">
+                          <span className="dot" />
+                          live
+                        </span>
+                      )}
+                    </span>
                   </div>
                   <span className="name">{o.name}</span>
                   <span className="muted mono" style={{ fontSize: 12 }}>
