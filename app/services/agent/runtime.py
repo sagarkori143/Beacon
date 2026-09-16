@@ -19,6 +19,7 @@ at around twenty concurrent chats.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
@@ -104,6 +105,10 @@ class AgentResult:
     def low_confidence(self) -> bool:
         """Answered without citing anything, despite having sources available."""
         return bool(self.context and self.context.passages) and self.grounding == 0.0
+
+
+#: Reference markers like "[S1]" or "[S1, S2]", on their own or in a row.
+_CITATIONS_ONLY = re.compile(r"\[\s*S\d+(?:\s*,\s*S\d+)*\s*\]|[\s.,;:]")
 
 
 class AgentRuntime:
@@ -394,6 +399,14 @@ class AgentRuntime:
 
         # 5. Finalize --------------------------------------------------------
         answer = "".join(answer_parts).strip()
+
+        # "[S1]" is empty in every way that matters: it cites a source for a
+        # statement it never made. Small models produce it when told firmly not
+        # to copy the passages, so strip the refs before deciding whether
+        # anything was actually said.
+        if answer and not _CITATIONS_ONLY.sub("", answer).strip():
+            log.info("citation_only_answer", trace_id=trace.trace_id, model=route.model)
+            answer = ""
 
         # An empty answer is a failure wearing a success's clothes: finish_reason
         # says "stop", nothing raised, and the user gets a blank bubble with no

@@ -245,3 +245,26 @@ class TestCredentialBoundary:
         assert not offenders, (
             "platform credentials must stay inside api/v1/platform.py:\n  " + "\n  ".join(offenders)
         )
+
+
+class TestAnswerQuality:
+    """One shape of answer that is worse than no answer at all."""
+
+    def test_a_bare_citation_counts_as_empty(self) -> None:
+        """ "[S1]" cites a source for a statement it never made.
+
+        Small models produce exactly this when told firmly not to copy the
+        passages, and it passes every check that only asks whether a string is
+        non empty. Stripping the refs is how the runtime notices.
+        """
+        from app.services.agent.runtime import _CITATIONS_ONLY
+
+        def is_empty(answer: str) -> bool:
+            return not _CITATIONS_ONLY.sub("", answer).strip()
+
+        assert is_empty("[S1]")
+        assert is_empty("[S1, S2]")
+        assert is_empty("  [S1] .  ")
+        assert is_empty("")
+        assert not is_empty("The bar closes at 1:00 AM on Friday [S1].")
+        assert not is_empty("No.")
